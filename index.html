@@ -1637,109 +1637,218 @@ function renderPartners(el) {
 function renderDocuments(el) {
   const projects = getProjects();
   const selectedClient = window.docClientFilter || '';
-  const selectedMonth = window.docMonthFilter || '';
-  const clients = Array.from(new Set(projects.map(function(p) { return p.client_name || ''; }).filter(Boolean))).sort();
+  const selectedMonth  = window.docMonthFilter  || '';
+  const clients = Array.from(new Set(projects.map(function(p){ return p.client_name||''; }).filter(Boolean))).sort();
 
   const projectDocs = projects.map(function(p) {
-    const q = getQuotation(p.project_id);
-    const inst = getInstallments(p.project_id);
+    const q      = getQuotation(p.project_id);
+    const inst   = getInstallments(p.project_id);
     const splits = getPartnerSplits(p.project_id);
-    const docs = [];
-    if (q) docs.push({ type: 'QT', num: q.doc_number, date: q.created_at, projectId: p.project_id });
+    const docs   = [];
+    if (q) docs.push({ type:'QT',  num:q.doc_number,      date:q.created_at,   projectId:p.project_id });
     inst.forEach(function(i) {
-      if (i.invoice_number) docs.push({ type: 'INV', num: i.invoice_number, date: i.invoice_date, projectId: p.project_id });
-      if (i.receipt_number) docs.push({ type: 'REC', num: i.receipt_number, date: i.receipt_date, projectId: p.project_id });
+      if (i.invoice_number) docs.push({ type:'INV', num:i.invoice_number, date:i.invoice_date, projectId:p.project_id });
+      if (i.receipt_number) docs.push({ type:'REC', num:i.receipt_number, date:i.receipt_date, projectId:p.project_id });
     });
     splits.forEach(function(sp) {
-      const paidPInsts = byType('partner_installment').filter(function(pi) { return pi.split_id === sp.__backendId && pi.paid; });
+      const paidPInsts = byType('partner_installment').filter(function(pi){ return pi.split_id===sp.__backendId && pi.paid; });
       if (paidPInsts.length > 0) {
         paidPInsts.forEach(function(pi) {
-          docs.push({ type: 'WHT', num: makeSafeWHTName(sp.partner_name, pi.paid_date) + '_INST' + ((pi.inst_index || 0) + 1), date: pi.paid_date, splitId: 'pinst:' + pi.__backendId, projectId: p.project_id });
-          docs.push({ type: 'PR', num: makeSafePartnerReceiptName(sp.partner_name, pi.paid_date, (pi.inst_index || 0)), date: pi.paid_date, splitId: 'pinst:' + pi.__backendId, projectId: p.project_id });
+          docs.push({ type:'WHT', num:makeSafeWHTName(sp.partner_name,pi.paid_date)+'_INST'+((pi.inst_index||0)+1), date:pi.paid_date, splitId:'pinst:'+pi.__backendId, projectId:p.project_id });
+          docs.push({ type:'PR',  num:makeSafePartnerReceiptName(sp.partner_name,pi.paid_date,(pi.inst_index||0)),  date:pi.paid_date, splitId:'pinst:'+pi.__backendId, projectId:p.project_id });
         });
       } else if (sp.partner_paid) {
-        docs.push({ type: 'WHT', num: makeSafeWHTName(sp.partner_name, sp.partner_paid_date), date: sp.partner_paid_date, splitId: sp.__backendId, projectId: p.project_id });
-        docs.push({ type: 'PR', num: makeSafePartnerReceiptName(sp.partner_name, sp.partner_paid_date, null), date: sp.partner_paid_date, splitId: sp.__backendId, projectId: p.project_id });
+        docs.push({ type:'WHT', num:makeSafeWHTName(sp.partner_name,sp.partner_paid_date),           date:sp.partner_paid_date, splitId:sp.__backendId, projectId:p.project_id });
+        docs.push({ type:'PR',  num:makeSafePartnerReceiptName(sp.partner_name,sp.partner_paid_date,null), date:sp.partner_paid_date, splitId:sp.__backendId, projectId:p.project_id });
       }
     });
-    return { project: p, docs: docs };
+    // เอกสารภายนอกที่อัปโหลดเอง
+    byType('external_doc').filter(function(d){ return d.project_id===p.project_id; }).forEach(function(d) {
+      docs.push({ type:'EXT', num:d.ext_doc_name||'เอกสาร', date:d.ext_doc_date, projectId:p.project_id, extId:d.__backendId, extData:d.ext_doc_data, extFileType:d.ext_doc_file_type });
+    });
+    return { project:p, docs:docs };
   });
 
   const monthSet = new Set();
-  projectDocs.forEach(function(group) {
-    group.docs.forEach(function(d) {
-      if (d.date) {
-        const dt = new Date(d.date);
-        if (!isNaN(dt.getTime())) monthSet.add(dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0'));
-      }
-    });
-  });
+  projectDocs.forEach(function(g){ g.docs.forEach(function(d){ if(d.date){ const dt=new Date(d.date); if(!isNaN(dt.getTime())) monthSet.add(dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')); } }); });
   const months = Array.from(monthSet).sort().reverse();
-  function monthLabel(v) {
-    if (!v) return 'ทุกเดือน';
-    const parts = v.split('-');
-    const names = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
-    return names[parseInt(parts[1],10)-1] + ' ' + (parseInt(parts[0],10)+543);
-  }
-  function docMonth(d) {
-    if (!d.date) return '';
-    const dt = new Date(d.date);
-    if (isNaN(dt.getTime())) return '';
-    return dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0');
-  }
+  function monthLabel(v){ if(!v) return 'ทุกเดือน'; const parts=v.split('-'); const names=['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.']; return names[parseInt(parts[1],10)-1]+' '+(parseInt(parts[0],10)+543); }
+  function docMonth(d){ if(!d.date) return ''; const dt=new Date(d.date); if(isNaN(dt.getTime())) return ''; return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0'); }
 
-  const filteredGroups = projectDocs.map(function(group) {
-    let docs = group.docs;
-    if (selectedMonth) docs = docs.filter(function(d) { return docMonth(d) === selectedMonth; });
-    return { project: group.project, docs: docs };
-  }).filter(function(group) {
-    if (selectedClient && group.project.client_name !== selectedClient) return false;
-    return group.docs.length > 0 || (!selectedMonth && !selectedClient);
+  const filteredGroups = projectDocs.map(function(g){
+    let docs=g.docs;
+    if(selectedMonth) docs=docs.filter(function(d){ return docMonth(d)===selectedMonth; });
+    return { project:g.project, docs:docs };
+  }).filter(function(g){
+    if(selectedClient && g.project.client_name!==selectedClient) return false;
+    return g.docs.length>0 || (!selectedMonth&&!selectedClient);
   });
-  const allFilteredDocs = filteredGroups.reduce(function(arr, group) { return arr.concat(group.docs); }, []);
-  const partnerReceiptDocs = allFilteredDocs.filter(function(d) { return d.type === 'PR'; });
-  const whtDocs = allFilteredDocs.filter(function(d) { return d.type === 'WHT'; });
-  const clientReceiptDocs = allFilteredDocs.filter(function(d) { return d.type === 'REC'; });
+  const allFilteredDocs = filteredGroups.reduce(function(arr,g){ return arr.concat(g.docs); },[]);
+  const partnerReceiptDocs = allFilteredDocs.filter(function(d){ return d.type==='PR'; });
+  const whtDocs            = allFilteredDocs.filter(function(d){ return d.type==='WHT'; });
+  const clientReceiptDocs  = allFilteredDocs.filter(function(d){ return d.type==='REC'; });
+  const extDocs            = allFilteredDocs.filter(function(d){ return d.type==='EXT'; });
 
-  el.innerHTML = '<div class="p-6 fade-in"><h1 class="text-2xl font-bold text-white mb-1">เอกสาร & พิมพ์</h1><p class="text-slate-400 text-sm mb-4">เลือกดูเอกสารตามลูกค้า หรือกรองตามรายเดือน</p>' +
-    '<div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">' +
-      '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">Partner Receipt</div><div class="mono text-2xl text-sky-400 font-bold">' + partnerReceiptDocs.length + '</div><div class="text-[11px] text-slate-500">ใบเสร็จรับเงินของพาร์ทเนอร์</div></div>' +
-      '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">Partner WHT</div><div class="mono text-2xl text-red-400 font-bold">' + whtDocs.length + '</div><div class="text-[11px] text-slate-500">เอกสารหัก ณ ที่จ่ายคู่กับพาร์ทเนอร์</div></div>' +
-      '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">Client Receipt</div><div class="mono text-2xl text-emerald-400 font-bold">' + clientReceiptDocs.length + '</div><div class="text-[11px] text-slate-500">ใบเสร็จลูกค้า</div></div>' +
+  el.innerHTML = '<div class="p-6 fade-in"><div class="flex items-center justify-between mb-1"><h1 class="text-2xl font-bold text-white">เอกสาร & พิมพ์</h1></div><p class="text-slate-400 text-sm mb-4">เลือกดูเอกสารตามลูกค้า หรือกรองตามรายเดือน</p>' +
+    '<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">' +
+      '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">Partner Receipt</div><div class="mono text-2xl text-sky-400 font-bold">'+partnerReceiptDocs.length+'</div></div>' +
+      '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">Partner WHT</div><div class="mono text-2xl text-red-400 font-bold">'+whtDocs.length+'</div></div>' +
+      '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">Client Receipt</div><div class="mono text-2xl text-emerald-400 font-bold">'+clientReceiptDocs.length+'</div></div>' +
+      '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">เอกสารภายนอก</div><div class="mono text-2xl text-purple-400 font-bold">'+extDocs.length+'</div></div>' +
     '</div>' +
-    '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-5">' +
-      '<div class="grid md:grid-cols-3 gap-3 items-end">' +
-        '<div><label class="text-xs text-slate-400">ลูกค้า</label><select class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" onchange="window.docClientFilter=this.value; renderDocuments(document.getElementById(\'main-content\'))">' +
-          '<option value="">ทุกลูกค้า</option>' + clients.map(function(c) { return '<option value="' + esc(c) + '" ' + (selectedClient === c ? 'selected' : '') + '>' + esc(c) + '</option>'; }).join('') + '</select></div>' +
-        '<div><label class="text-xs text-slate-400">เดือน</label><select class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" onchange="window.docMonthFilter=this.value; renderDocuments(document.getElementById(\'main-content\'))">' +
-          '<option value="">ทุกเดือน</option>' + months.map(function(m) { return '<option value="' + m + '" ' + (selectedMonth === m ? 'selected' : '') + '>' + monthLabel(m) + '</option>'; }).join('') + '</select></div>' +
-        '<div class="flex gap-2"><button type="button" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm" onclick="window.docClientFilter=\'\';window.docMonthFilter=\'\';renderDocuments(document.getElementById(\'main-content\'))">ล้างตัวกรอง</button>' +
-        '<div class="text-xs text-slate-500 flex items-center">พบ ' + filteredGroups.reduce(function(s,g){ return s + g.docs.length; },0) + ' เอกสาร</div></div>' +
-      '</div>' +
-    '</div>' +
-    '<div class="space-y-2">' +
-    (projects.length === 0 ? '<p class="text-slate-500 text-sm text-center py-8">ยังไม่มีโปรเจกต์</p>' :
-      (filteredGroups.length === 0 ? '<p class="text-slate-500 text-sm text-center py-8">ไม่พบเอกสารตามตัวกรองนี้</p>' :
+    '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-5"><div class="grid md:grid-cols-3 gap-3 items-end">' +
+      '<div><label class="text-xs text-slate-400">ลูกค้า</label><select class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" onchange="window.docClientFilter=this.value; renderDocuments(document.getElementById(\'main-content\'))">' +
+        '<option value="">ทุกลูกค้า</option>' + clients.map(function(c){ return '<option value="'+esc(c)+'" '+(selectedClient===c?'selected':'')+'>'+esc(c)+'</option>'; }).join('') + '</select></div>' +
+      '<div><label class="text-xs text-slate-400">เดือน</label><select class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" onchange="window.docMonthFilter=this.value; renderDocuments(document.getElementById(\'main-content\'))">' +
+        '<option value="">ทุกเดือน</option>' + months.map(function(m){ return '<option value="'+m+'" '+(selectedMonth===m?'selected':'')+'>'+monthLabel(m)+'</option>'; }).join('') + '</select></div>' +
+      '<div class="flex gap-2"><button type="button" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm" onclick="window.docClientFilter=\'\';window.docMonthFilter=\'\';renderDocuments(document.getElementById(\'main-content\'))">ล้างตัวกรอง</button>' +
+      '<div class="text-xs text-slate-500 flex items-center">พบ ' + filteredGroups.reduce(function(s,g){ return s+g.docs.length; },0) + ' เอกสาร</div></div></div></div>' +
+    '<div class="space-y-3">' +
+    (projects.length===0 ? '<p class="text-slate-500 text-sm text-center py-8">ยังไม่มีโปรเจกต์</p>' :
+      (filteredGroups.length===0 ? '<p class="text-slate-500 text-sm text-center py-8">ไม่พบเอกสารตามตัวกรองนี้</p>' :
       filteredGroups.map(function(group) {
-        const p = group.project;
+        const p    = group.project;
         const docs = group.docs;
         return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4">' +
-          '<div class="flex items-start justify-between gap-3 mb-2"><div><div class="text-sm font-medium text-white">' + esc(p.project_name || '-') + '</div><div class="text-xs text-slate-500 mt-0.5">ลูกค้า: ' + esc(p.client_name || '-') + '</div></div><span class="text-xs text-slate-500">' + docs.length + ' เอกสาร</span></div>' +
-          (docs.length === 0 ? '<p class="text-xs text-slate-500">ยังไม่มีเอกสาร</p>' :
+          '<div class="flex items-center justify-between gap-3 mb-3">' +
+            '<div><div class="text-sm font-semibold text-white">'+esc(p.project_name||'-')+'</div>' +
+            '<div class="text-xs text-slate-500">ลูกค้า: '+esc(p.client_name||'-')+'</div></div>' +
+            '<div class="flex items-center gap-2">' +
+              '<span class="text-xs text-slate-500">'+docs.length+' เอกสาร</span>' +
+              '<button class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs flex items-center gap-1" onclick="showUploadExtDoc(\''+p.project_id+'\')"><i data-lucide="upload" class="w-3 h-3"></i> อัปโหลดเอกสาร</button>' +
+            '</div>' +
+          '</div>' +
+          '<div id="ext-upload-'+p.project_id+'"></div>' +
+          (docs.length===0 ? '<p class="text-xs text-slate-500 py-2">ยังไม่มีเอกสาร</p>' :
             '<div class="space-y-1">' + docs.map(function(d) {
-              const colorCls = d.type === 'QT' ? 'text-orange-400' : d.type === 'INV' ? 'text-amber-400' : d.type === 'REC' ? 'text-emerald-400' : d.type === 'PR' ? 'text-sky-400' : 'text-red-400';
-              const typeLabel = d.type === 'QT' ? 'Quotation' : d.type === 'INV' ? 'Invoice' : d.type === 'REC' ? 'Receipt' : d.type === 'PR' ? 'Partner Receipt' : 'WHT';
-              const btns = d.type === 'WHT'
-                ? '<button type="button" class="text-xs text-orange-400 hover:text-orange-300" onclick="event.stopPropagation(); previewWHT(\'' + d.splitId + '\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button><button type="button" class="text-xs text-red-400 hover:text-red-300 ml-2" onclick="event.stopPropagation(); printWHT(\'' + d.splitId + '\')"><i data-lucide="printer" class="w-3 h-3 inline"></i> พิมพ์</button>'
-                : d.type === 'PR'
-                ? '<button type="button" class="text-xs text-orange-400 hover:text-orange-300" onclick="return handlePartnerReceiptPreview(event, \'' + d.splitId + '\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button><button type="button" class="text-xs text-emerald-400 hover:text-emerald-300 ml-2" onclick="return handlePartnerReceiptPrint(event, \'' + d.splitId + '\')"><i data-lucide="printer" class="w-3 h-3 inline"></i> พิมพ์</button>'
-                : '<button type="button" class="text-xs text-orange-400 hover:text-orange-300" onclick="event.stopPropagation(); previewDoc(\'' + p.project_id + '\',\'' + d.type + '\',\'' + d.num + '\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button><button type="button" class="text-xs text-emerald-400 hover:text-emerald-300 ml-2" onclick="event.stopPropagation(); printDoc(\'' + p.project_id + '\',\'' + d.type + '\',\'' + d.num + '\')"><i data-lucide="printer" class="w-3 h-3 inline"></i> พิมพ์</button>';
-              return '<div class="flex items-center gap-3 p-2 bg-slate-800/50 rounded"><span class="text-[10px] px-2 py-0.5 rounded bg-slate-900 text-slate-400">' + typeLabel + '</span><span class="mono text-xs ' + colorCls + '">' + esc(d.num || '-') + '</span><span class="text-xs text-slate-500">' + fmtDate(d.date) + '</span><div class="flex-1"></div>' + btns + '</div>';
+              const colorCls  = d.type==='QT'?'text-orange-400':d.type==='INV'?'text-amber-400':d.type==='REC'?'text-emerald-400':d.type==='PR'?'text-sky-400':d.type==='EXT'?'text-purple-400':'text-red-400';
+              const typeLabel = d.type==='QT'?'Quotation':d.type==='INV'?'Invoice':d.type==='REC'?'Receipt':d.type==='PR'?'Partner Receipt':d.type==='EXT'?'เอกสารภายนอก':'WHT';
+              let btns = '';
+              if (d.type==='WHT') {
+                btns = '<button type="button" class="text-xs text-orange-400 hover:text-orange-300" onclick="event.stopPropagation();previewWHT(\''+d.splitId+'\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button>' +
+                       '<button type="button" class="text-xs text-red-400 hover:text-red-300 ml-2" onclick="event.stopPropagation();printWHT(\''+d.splitId+'\')"><i data-lucide="printer" class="w-3 h-3 inline"></i> พิมพ์</button>';
+              } else if (d.type==='PR') {
+                btns = '<button type="button" class="text-xs text-orange-400 hover:text-orange-300" onclick="return handlePartnerReceiptPreview(event,\''+d.splitId+'\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button>' +
+                       '<button type="button" class="text-xs text-emerald-400 hover:text-emerald-300 ml-2" onclick="return handlePartnerReceiptPrint(event,\''+d.splitId+'\')"><i data-lucide="printer" class="w-3 h-3 inline"></i> พิมพ์</button>';
+              } else if (d.type==='EXT') {
+                btns = '<button type="button" class="text-xs text-purple-400 hover:text-purple-300" onclick="event.stopPropagation();viewExtDoc(\''+d.extId+'\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button>' +
+                       '<button type="button" class="text-xs text-red-400 hover:text-red-300 ml-2" onclick="event.stopPropagation();deleteExtDoc(\''+d.extId+'\')"><i data-lucide="trash-2" class="w-3 h-3 inline"></i> ลบ</button>';
+              } else {
+                btns = '<button type="button" class="text-xs text-orange-400 hover:text-orange-300" onclick="event.stopPropagation();previewDoc(\''+p.project_id+'\',\''+d.type+'\',\''+d.num+'\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button>' +
+                       '<button type="button" class="text-xs text-emerald-400 hover:text-emerald-300 ml-2" onclick="event.stopPropagation();printDoc(\''+p.project_id+'\',\''+d.type+'\',\''+d.num+'\')"><i data-lucide="printer" class="w-3 h-3 inline"></i> พิมพ์</button>';
+              }
+              return '<div class="flex items-center gap-2 p-2 bg-slate-800/50 rounded-lg flex-wrap">' +
+                '<span class="text-[10px] px-2 py-0.5 rounded bg-slate-900 text-slate-400 flex-shrink-0">'+typeLabel+'</span>' +
+                '<span class="mono text-xs '+colorCls+' flex-shrink-0">'+esc(d.num||'-')+'</span>' +
+                '<span class="text-xs text-slate-500 flex-shrink-0">'+fmtDate(d.date)+'</span>' +
+                '<div class="flex-1"></div>' + btns + '</div>';
             }).join('') + '</div>') +
           '</div>';
       }).join(''))) + '</div></div>';
   if (window.lucide) lucide.createIcons();
 }
+
+// ── อัปโหลดเอกสารภายนอก ────────────────────────────────────────────────────
+function showUploadExtDoc(projId) {
+  const area = document.getElementById('ext-upload-' + projId);
+  if (!area) return;
+  const today = new Date().toISOString().slice(0, 10);
+  area.innerHTML = '<div class="bg-slate-800 border border-slate-700 border-dashed rounded-xl p-4 mb-3 fade-in">' +
+    '<div class="text-xs font-semibold text-slate-300 mb-3 flex items-center gap-2"><i data-lucide="upload" class="w-3 h-3 text-purple-400"></i> อัปโหลดเอกสารภายนอก</div>' +
+    '<div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">' +
+      '<div><label class="text-xs text-slate-400 block mb-1">ชื่อเอกสาร</label>' +
+      '<input id="ext-name-'+projId+'" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white focus:border-purple-500 focus:outline-none" placeholder="เช่น ใบเสร็จน้ำมัน, สัญญาจ้าง..."></div>' +
+      '<div><label class="text-xs text-slate-400 block mb-1">วันที่เอกสาร</label>' +
+      '<input id="ext-date-'+projId+'" type="date" value="'+today+'" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white focus:border-purple-500 focus:outline-none"></div>' +
+      '<div><label class="text-xs text-slate-400 block mb-1">ไฟล์ (รูปภาพหรือ PDF)</label>' +
+      '<input id="ext-file-'+projId+'" type="file" accept="image/*,application/pdf" class="w-full text-xs text-slate-400 file:mr-2 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-purple-600 file:text-white file:text-xs file:cursor-pointer hover:file:bg-purple-500" onchange="previewExtDoc(this,\''+projId+'\')"></div>' +
+    '</div>' +
+    '<div id="ext-preview-'+projId+'" class="mb-3"></div>' +
+    '<div class="flex gap-2 justify-end">' +
+      '<button type="button" class="px-4 py-2 bg-slate-700 text-slate-300 hover:bg-slate-600 rounded-lg text-sm" onclick="document.getElementById(\'ext-upload-'+projId+'\').innerHTML=\'\'">ยกเลิก</button>' +
+      '<button type="button" class="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="saveExtDoc(\''+projId+'\')"><i data-lucide="save" class="w-4 h-4"></i> บันทึก</button>' +
+    '</div>' +
+    '</div>';
+  if (window.lucide) lucide.createIcons();
+}
+
+function previewExtDoc(input, projId) {
+  const file = input.files && input.files[0];
+  const preview = document.getElementById('ext-preview-' + projId);
+  if (!file || !preview) return;
+  if (file.size > 5 * 1024 * 1024) { showToast('ไฟล์ใหญ่เกิน 5MB', 'error'); input.value = ''; preview.innerHTML = ''; return; }
+  if (file.type.startsWith('image/')) {
+    const url = URL.createObjectURL(file);
+    preview.innerHTML = '<img src="'+url+'" class="max-h-32 rounded-lg border border-slate-600">';
+  } else {
+    preview.innerHTML = '<div class="flex items-center gap-2 text-xs text-slate-400 p-2 bg-slate-900 rounded-lg"><i data-lucide="file-text" class="w-4 h-4 text-purple-400"></i>'+esc(file.name)+'</div>';
+    if (window.lucide) lucide.createIcons();
+  }
+  // auto-fill name if empty
+  const nameEl = document.getElementById('ext-name-' + projId);
+  if (nameEl && !nameEl.value) nameEl.value = file.name.replace(/\.[^.]+$/, '');
+}
+
+async function saveExtDoc(projId) {
+  const nameEl = document.getElementById('ext-name-' + projId);
+  const dateEl = document.getElementById('ext-date-' + projId);
+  const fileEl = document.getElementById('ext-file-' + projId);
+  const name   = nameEl ? nameEl.value.trim() : '';
+  const date   = dateEl ? dateEl.value : '';
+  const file   = fileEl && fileEl.files && fileEl.files[0];
+  if (!name) { showToast('กรุณาใส่ชื่อเอกสาร', 'error'); return; }
+  if (!file)  { showToast('กรุณาเลือกไฟล์', 'error'); return; }
+  const reader = new FileReader();
+  reader.onload = async function() {
+    const result = await window.dataSdk.create({
+      record_type: 'external_doc',
+      project_id: projId,
+      ext_doc_name: name,
+      ext_doc_date: date ? new Date(date + 'T12:00:00').toISOString() : new Date().toISOString(),
+      ext_doc_data: reader.result,
+      ext_doc_file_type: file.type,
+      created_at: new Date().toISOString()
+    });
+    if (result.isOk) {
+      showToast('บันทึกเอกสารสำเร็จ ✓');
+      renderDocuments(document.getElementById('main-content'));
+    } else { showToast('เกิดข้อผิดพลาด', 'error'); }
+  };
+  reader.onerror = function() { showToast('อ่านไฟล์ไม่ได้', 'error'); };
+  reader.readAsDataURL(file);
+}
+
+function viewExtDoc(extId) {
+  const rec = allData.find(function(r){ return r.__backendId === extId; });
+  if (!rec || !rec.ext_doc_data) return;
+  const d = document.getElementById('confirm-dialog');
+  d.style.display = 'flex';
+  const isPdf = rec.ext_doc_file_type === 'application/pdf';
+  const name  = esc(rec.ext_doc_name || 'เอกสาร');
+  const content = isPdf
+    ? '<iframe src="'+rec.ext_doc_data+'" class="w-full rounded-lg" style="height:70vh;border:none;"></iframe>'
+    : '<img src="'+rec.ext_doc_data+'" class="max-w-full max-h-[70vh] rounded-lg object-contain mx-auto block">';
+  d.innerHTML = '<div class="bg-slate-800 rounded-xl p-4 border border-slate-700 fade-in" style="max-width:min(92vw,720px);width:100%">' +
+    '<div class="flex items-center justify-between mb-3">' +
+      '<div class="text-sm font-semibold text-white flex items-center gap-2"><i data-lucide="'+(isPdf?'file-text':'image')+'" class="w-4 h-4 text-purple-400"></i>'+name+'</div>' +
+      '<div class="flex gap-2">' +
+        '<a href="'+rec.ext_doc_data+'" download="'+name+'" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs flex items-center gap-1"><i data-lucide="download" class="w-3 h-3"></i>ดาวน์โหลด</a>' +
+        '<button class="px-3 py-1.5 bg-slate-700 text-slate-300 hover:bg-slate-600 rounded-lg text-xs" onclick="document.getElementById(\'confirm-dialog\').style.display=\'none\'">ปิด</button>' +
+      '</div>' +
+    '</div>' + content + '</div>';
+  if (window.lucide) lucide.createIcons();
+}
+
+async function deleteExtDoc(extId) {
+  const rec = allData.find(function(r){ return r.__backendId === extId; });
+  if (!rec) return;
+  showConfirm('ลบเอกสาร "' + (rec.ext_doc_name||'เอกสาร') + '" ?', async function() {
+    const r = await window.dataSdk.delete(rec);
+    if (r.isOk) { showToast('ลบแล้ว'); renderDocuments(document.getElementById('main-content')); }
+    else showToast('เกิดข้อผิดพลาด', 'error');
+  });
+}
+
 
 function previewDoc(projId, type, docNum) {
   const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
