@@ -1021,8 +1021,9 @@ function showTab(tab, btn) {
 
 // ===== QUOTATION EDITOR =====
 function renderQuotationEditor(q, items, locked, projId) {
-  const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
-  let rows = items.map(function(it, i) {
+  var cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
+  if (!locked) { _qtItems[q.__backendId] = null; items = _qtGetItems(q); }  // init in-memory state
+  var rows = items.map(function(it, i) {
     return '<tr class="border-b border-slate-800">' +
       '<td class="py-2 pr-2 text-slate-500">' + (i+1) + '</td>' +
       '<td class="py-2 pr-2"><input class="bg-transparent border-b border-slate-700 w-full text-white text-sm focus:border-orange-500 outline-none" value="' + (it.desc||'') + '" data-idx="' + i + '" data-field="desc" onchange="updateQtItem(this,\'' + projId + '\')" ' + (locked ? 'disabled' : '') + '></td>' +
@@ -1071,7 +1072,7 @@ function renderQuotationEditor(q, items, locked, projId) {
     '<div class="text-xs text-slate-400 mt-1">' + (cfg.company_address || defaultConfig.company_address) + '</div>' +
     '<div class="text-xs text-slate-500">เลขผู้เสียภาษี: ' + (cfg.company_tax_id || defaultConfig.company_tax_id) + '</div>' +
     '</div>' +
-    '<div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="border-b border-slate-700 text-slate-400 text-xs"><th class="text-left py-2 pr-2">#</th><th class="text-left py-2 pr-2">รายการ</th><th class="text-right py-2 pr-2 w-20">จำนวน</th><th class="text-right py-2 pr-2 w-28">ราคา/หน่วย</th><th class="text-right py-2 w-28">รวม</th><th class="w-8"></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="border-b border-slate-700 text-slate-400 text-xs"><th class="text-left py-2 pr-2">#</th><th class="text-left py-2 pr-2">รายการ</th><th class="text-right py-2 pr-2 w-20">จำนวน</th><th class="text-right py-2 pr-2 w-28">ราคา/หน่วย</th><th class="text-right py-2 w-28">รวม</th><th class="w-8"></th></tr></thead><tbody id=\'qt-tbody-' + q.__backendId + '\'>' + rows + '</tbody></table></div>' +
     (!locked ? '<button type="button" class="mt-2 text-xs text-orange-400 hover:text-orange-300 flex items-center gap-1" onclick="addQtItem(\'' + q.__backendId + '\')"><i data-lucide="plus" class="w-3 h-3"></i> เพิ่มรายการ</button>' : '') +
     '<div class="mt-4 pt-3 border-t border-slate-700 space-y-1">' +
     '<div class="flex justify-between text-sm"><span class="text-slate-400">Sub-total</span><span class="mono text-white">' + fmt(q.subtotal||0) + '</span></div>' +
@@ -1093,7 +1094,7 @@ async function createQuotation(projId) {
   const docNum = nextDocNum('QT');
   const result = await window.dataSdk.create({
     record_type: 'quotation', project_id: projId, doc_number: docNum,
-    items_json: '[]', subtotal: 0, vat_amount: 0, grand_total: 0,
+    items_json: JSON.stringify(Array.from({length:10},function(){return {desc:'',qty:1,price:0};})), subtotal: 0, vat_amount: 0, grand_total: 0,
     vat_mode: 'excluded', created_at: new Date().toISOString(),
     doc_subject: '', attention_name: '', ref_no: '', valid_until: '',
     payment_terms_text: 'Payment due within 7 days', remark_text: ''
@@ -1101,41 +1102,105 @@ async function createQuotation(projId) {
   if (result.isOk) { showToast('สร้างใบเสนอราคา ' + docNum); await addLog(projId, 'สร้างใบเสนอราคา', docNum); }
 }
 
-async function addQtItem(qId) {
-  const q = allData.find(r => r.__backendId === qId);
-  if (!q) return;
-  const items = safeParseJSON(q.items_json);
-  items.push({ desc: 'รายการใหม่', qty: 1, price: 0 });
-  await recalcQuotation(q, items);
+// ===== In-memory item state (separate from Sheets) =====
+var _qtItems = {};  // qId -> items array (live UI state)
+var _qtDebounce = {};
+
+function _qtGetItems(q) {
+  if (!_qtItems[q.__backendId]) _qtItems[q.__backendId] = safeParseJSON(q.items_json);
+  // Ensure at least 10 rows
+  while (_qtItems[q.__backendId].length < 10) _qtItems[q.__backendId].push({desc:'', qty:1, price:0});
+  return _qtItems[q.__backendId];
 }
 
-async function removeQtItem(qId, idx) {
-  const q = allData.find(r => r.__backendId === qId);
-  if (!q) return;
-  const items = safeParseJSON(q.items_json);
-  items.splice(idx, 1);
-  await recalcQuotation(q, items);
+function _qtUpdateTotals(qId) {
+  var q = allData.find(function(r){return r.__backendId===qId;});
+  if (!q || !_qtItems[qId]) return;
+  var items = _qtItems[qId];
+  var sub = items.reduce(function(s,it){return s+(it.qty||0)*(it.price||0);},0);
+  var whtRate = q.client_wht_rate||0;
+  var vat, wht, tot;
+  if (q.vat_mode==='excluded') { vat=roundHU(sub*.07); wht=roundHU(sub*whtRate/100); tot=roundHU(sub+vat-wht); }
+  else { var sub0=roundHU(sub/1.07); vat=roundHU(sub-sub0); wht=roundHU(sub0*whtRate/100); tot=roundHU(sub-wht); }
+  var s=function(id,v){var e=document.getElementById(id);if(e)e.textContent=fmt(v);};
+  s('qt-sub-'+qId, sub); s('qt-vat-'+qId, vat); s('qt-wht-'+qId, wht); s('qt-tot-'+qId, tot);
+  return {sub:sub, vat:vat, wht:wht, tot:tot};
 }
 
-const _qtDebounceMap = {};
-function updateQtItem(input, projId) {
-  const idx = parseInt(input.dataset.idx);
-  const field = input.dataset.field;
-  // Update local total preview instantly
-  const q = getQuotation(projId);
+function updateQtItem(input, qId) {
+  var idx = parseInt(input.dataset.idx);
+  var field = input.dataset.field;
+  var q = allData.find(function(r){return r.__backendId===qId;});
   if (!q) return;
-  const items = safeParseJSON(q.items_json);
+  var items = _qtGetItems(q);
   if (!items[idx]) return;
-  items[idx][field] = field === 'desc' ? input.value : parseFloat(input.value) || 0;
-  // Update subtotal display immediately without saving
-  const subtotal = items.reduce(function(s,it){ return s + (it.qty||0)*(it.price||0); }, 0);
-  const subEl = document.getElementById('qt-subtotal-' + projId);
-  if (subEl) subEl.textContent = fmt(subtotal);
-  // Debounce save: wait 600ms after last keystroke
-  clearTimeout(_qtDebounceMap[projId]);
-  _qtDebounceMap[projId] = setTimeout(async function() {
-    await recalcQuotation(q, items);
-  }, 600);
+  items[idx][field] = field==='desc' ? input.value : (parseFloat(input.value)||0);
+  // Update this row's total instantly (DOM only)
+  var rowTd = document.getElementById('qt-row-'+qId+'-'+idx);
+  if (rowTd) rowTd.textContent = fmt((items[idx].qty||0)*(items[idx].price||0));
+  // Update summary totals instantly
+  _qtUpdateTotals(qId);
+  // Debounce save to Sheets (800ms)
+  clearTimeout(_qtDebounce[qId]);
+  _qtDebounce[qId] = setTimeout(function(){
+    var t = _qtUpdateTotals(qId);
+    var updated = Object.assign({},q,{items_json:JSON.stringify(items),subtotal:t.sub,vat_amount:t.vat,client_wht_amount:t.wht,grand_total:t.tot});
+    var idx2=allData.findIndex(function(d){return d.__backendId===qId;});
+    if(idx2>=0)allData[idx2]=updated;
+    window.dataSdk.update(updated);
+  }, 800);
+}
+
+function addQtItem(qId) {
+  var q = allData.find(function(r){return r.__backendId===qId;});
+  if (!q) return;
+  var items = _qtGetItems(q);
+  var newItem = {desc:'', qty:1, price:0};
+  items.push(newItem);
+  var tbody = document.getElementById('qt-tbody-'+qId);
+  if (tbody) {
+    var idx = items.length-1;
+    var tr = document.createElement('tr');
+    tr.className = 'border-b border-slate-800';
+    tr.dataset.row = idx;
+    tr.innerHTML = '<td class="py-2 pr-2 text-slate-500">'+(idx+1)+'</td>'+
+      '<td class="py-2 pr-2"><input class="bg-transparent border-b border-slate-700 w-full text-white text-sm focus:border-orange-500 outline-none" value="" data-idx="'+idx+'" data-field="desc" data-qid="'+qId+'" oninput="updateQtItem(this,this.dataset.qid)"></td>'+
+      '<td class="py-2 pr-2"><input type="number" step="1" value="1" class="bg-transparent border-b border-slate-700 w-full text-right mono text-white text-sm focus:border-orange-500 outline-none" data-idx="'+idx+'" data-field="qty" data-qid="'+qId+'" oninput="updateQtItem(this,this.dataset.qid)"></td>'+
+      '<td class="py-2 pr-2"><input type="number" step="0.01" value="0" class="bg-transparent border-b border-slate-700 w-full text-right mono text-white text-sm focus:border-orange-500 outline-none" data-idx="'+idx+'" data-field="price" data-qid="'+qId+'" oninput="updateQtItem(this,this.dataset.qid)"></td>'+
+      '<td class="py-2 text-right mono text-white" id="qt-row-'+qId+'-'+idx+'">0.00</td>'+
+      '<td class="py-2"><button type="button" class="text-slate-500 hover:text-red-400" data-qid="'+qId+'" data-row="'+idx+'" onclick="removeQtItem(this.dataset.qid,parseInt(this.dataset.row))"><i data-lucide="x" class="w-3 h-3"></i></button></td>';
+    tbody.appendChild(tr);
+    if(window.lucide)lucide.createIcons();
+  }
+}
+
+function removeQtItem(qId, idx) {
+  var q = allData.find(function(r){return r.__backendId===qId;});
+  if (!q) return;
+  var items = _qtGetItems(q);
+  items.splice(idx, 1);
+  // Remove row from DOM and renumber
+  var tbody = document.getElementById('qt-tbody-'+qId);
+  if (tbody) {
+    var rows = tbody.querySelectorAll('tr');
+    if (rows[idx]) rows[idx].remove();
+    tbody.querySelectorAll('tr').forEach(function(tr,i){
+      var num = tr.querySelector('td:first-child'); if(num) num.textContent=i+1;
+      tr.querySelectorAll('input[data-idx]').forEach(function(inp){inp.dataset.idx=i;});
+      var btn = tr.querySelector('button[data-row]'); if(btn) btn.dataset.row=i;
+      var td = tr.querySelector('td[id^="qt-row-"]'); if(td) td.id='qt-row-'+qId+'-'+i;
+    });
+  }
+  _qtUpdateTotals(qId);
+  // Save after remove
+  clearTimeout(_qtDebounce[qId]);
+  _qtDebounce[qId] = setTimeout(function(){
+    var t = _qtUpdateTotals(qId);
+    var updated = Object.assign({},q,{items_json:JSON.stringify(items),subtotal:t.sub,vat_amount:t.vat,client_wht_amount:t.wht,grand_total:t.tot});
+    var i2=allData.findIndex(function(d){return d.__backendId===qId;});
+    if(i2>=0)allData[i2]=updated;
+    window.dataSdk.update(updated);
+  }, 300);
 }
 
 async function updateVATMode(qId, mode) {
