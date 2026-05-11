@@ -666,32 +666,61 @@ function renderDashboard(el) {
 }
 
 // ===== PAGE: PROFILES =====
+var _profileView = localStorage.getItem('DSR_pv') || 'grid';
 function renderProfiles(el) {
-  const profiles = byType('profile');
-  const clients = profiles.filter(p => p.role === 'client');
-  const partners = profiles.filter(p => p.role === 'partner');
+  var profiles = byType('profile');
+  var clients = profiles.filter(function(p){return p.role==='client';});
+  var partners = profiles.filter(function(p){return p.role==='partner';});
+  var isGrid = _profileView === 'grid';
+  var search = (el._psearch || '').toLowerCase();
+  var filtered = profiles.filter(function(p){ return !search || (p.name||'').toLowerCase().includes(search) || (p.tax_id||'').includes(search); });
+  var grid = isGrid ? 'grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3' : 'space-y-2';
+  var btn1cls = 'p-2 rounded-lg border ' + (!isGrid ? 'border-orange-500 text-orange-400' : 'border-slate-700 text-slate-400');
+  var btn2cls = 'p-2 rounded-lg border ' + (isGrid ? 'border-orange-500 text-orange-400' : 'border-slate-700 text-slate-400');
   el.innerHTML = '<div class="p-6 fade-in">' +
-    '<div class="flex justify-between items-center mb-6"><div><h1 class="text-2xl font-bold text-white">ลูกค้า & พาร์ทเนอร์</h1><p class="text-slate-400 text-sm">จัดการข้อมูลติดต่อและภาษี</p></div>' +
+    '<div class="flex justify-between items-center mb-4"><div><h1 class="text-2xl font-bold text-white">ลูกค้า & พาร์ทเนอร์</h1></div>' +
     '<button class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="showProfileForm()"><i data-lucide="plus" class="w-4 h-4"></i> เพิ่มรายชื่อ</button></div>' +
+    '<div class="flex gap-2 mb-4">' +
+    '<div class="relative flex-1"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i><input type="text" placeholder="ค้นหา..." value="' + (el._psearch||'') + '" oninput="_profileSearch(this,el)" class="w-full pl-9 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 focus:outline-none"></div>' +
+    '<button class="' + btn1cls + '" onclick="_profileView=\'list\';localStorage.setItem(\'DSR_pv\',\'list\');renderProfiles(document.getElementById(\'main-content\'))"><i data-lucide="list" class="w-4 h-4"></i></button>' +
+    '<button class="' + btn2cls + '" onclick="_profileView=\'grid\';localStorage.setItem(\'DSR_pv\',\'grid\');renderProfiles(document.getElementById(\'main-content\'))"><i data-lucide="layout-grid" class="w-4 h-4"></i></button>' +
+    '</div>' +
     '<div id="profile-form-area"></div>' +
     '<div class="flex gap-1 border-b border-slate-800 mb-4">' +
     '<button class="tab-btn active" onclick="filterProfiles(\'all\',this)">ทั้งหมด (' + profiles.length + ')</button>' +
     '<button class="tab-btn" onclick="filterProfiles(\'client\',this)">ลูกค้า (' + clients.length + ')</button>' +
     '<button class="tab-btn" onclick="filterProfiles(\'partner\',this)">พาร์ทเนอร์ (' + partners.length + ')</button>' +
-    '</div><div id="profiles-list" class="space-y-2">' +
-    (profiles.length === 0 ? '<p class="text-slate-500 text-sm py-8 text-center">ยังไม่มีรายชื่อ</p>' :
-      profiles.map(profileCard).join('')) + '</div></div>';
+    '</div><div id="profiles-list" class="' + grid + '">' +
+    (filtered.length === 0 ? '<p class="text-slate-500 text-sm py-8 text-center">ไม่พบรายชื่อ</p>' :
+      filtered.map(function(p){ return profileCard(p, isGrid); }).join('')) +
+    '</div></div>';
+  if (window.lucide) lucide.createIcons();
 }
+function _profileSearch(inp, el) { el._psearch = inp.value; var q = inp.value.toLowerCase();
+  document.querySelectorAll('#profiles-list > div[data-role]').forEach(function(c){ c.style.display = (!q || c.dataset.search.includes(q)) ? '' : 'none'; }); }
 
-function profileCard(p) {
-  return '<div class="flex items-center gap-4 p-4 bg-slate-900 border border-slate-800 rounded-xl card-hover" data-role="' + p.role + '">' +
-    '<div class="w-10 h-10 rounded-full ' + (p.role === 'client' ? 'bg-orange-900 text-orange-400' : 'bg-purple-900 text-purple-400') + ' flex items-center justify-center font-bold text-sm">' + (p.name||'?')[0] + '</div>' +
+function profileCard(p, isGrid) {
+  var srch = ((p.name||'')+' '+(p.tax_id||'')+' '+(p.email||'')).toLowerCase();
+  var color = p.role==='client' ? 'bg-orange-900 text-orange-400' : 'bg-purple-900 text-purple-400';
+  var badge = '<span class="badge ' + (p.role==='client' ? 'badge-sent' : 'bg-purple-900/50 text-purple-400') + ' text-xs">' + (p.role==='client'?'ลูกค้า':'พาร์ทเนอร์') + '</span>';
+  var edit = '<button class="text-slate-500 hover:text-blue-400 p-1" onclick="editProfile(\'' + p.__backendId + '\')"><i data-lucide="pencil" class="w-3.5 h-3.5"></i></button>';
+  var del = '<button class="text-slate-500 hover:text-red-400 p-1" onclick="deleteProfile(\'' + p.__backendId + '\')"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>';
+  if (isGrid) {
+    return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col gap-2 card-hover" data-role="' + p.role + '" data-search="' + srch + '">' +
+      '<div class="flex items-start justify-between"><div class="w-10 h-10 rounded-full ' + color + ' flex items-center justify-center font-bold">' + (p.name||'?')[0] + '</div>' + badge + '</div>' +
+      '<div class="font-semibold text-sm text-white truncate">' + (p.name||'-') + '</div>' +
+      '<div class="text-xs text-slate-500">' + (p.entity_type==='corporate'?'นิติบุคคล':'บุคคลธรรมดา') + '</div>' +
+      '<div class="text-xs text-slate-400 font-mono">' + (p.tax_id||'ไม่มีเลขภาษี') + '</div>' +
+      (p.email ? '<div class="text-xs text-slate-500 truncate">' + p.email + '</div>' : '') +
+      '<div class="flex justify-end gap-1 border-t border-slate-800 pt-2 mt-1">' + edit + del + '</div>' +
+      '</div>';
+  }
+  return '<div class="flex items-center gap-4 p-4 bg-slate-900 border border-slate-800 rounded-xl card-hover" data-role="' + p.role + '" data-search="' + srch + '">' +
+    '<div class="w-10 h-10 rounded-full ' + color + ' flex items-center justify-center font-bold text-sm">' + (p.name||'?')[0] + '</div>' +
     '<div class="flex-1 min-w-0"><div class="text-sm font-medium text-white">' + (p.name||'-') + '</div>' +
-    '<div class="text-xs text-slate-500">' + (p.entity_type === 'corporate' ? 'นิติบุคคล' : 'บุคคลธรรมดา') + ' · ' + (p.tax_id||'ไม่มีเลขภาษี') + '</div>' +
-    '<div class="text-xs text-slate-500">' + (p.email||'') + (p.phone ? ' · ' + p.phone : '') + '</div></div>' +
-    '<span class="badge ' + (p.role === 'client' ? 'badge-sent' : 'bg-purple-900/50 text-purple-400') + '">' + (p.role === 'client' ? 'ลูกค้า' : 'พาร์ทเนอร์') + '</span>' +
-    '<button class="text-slate-500 hover:text-blue-400 p-1" onclick="editProfile(\'' + p.__backendId + '\')"><i data-lucide="pencil" class="w-4 h-4"></i></button>' +
-    '<button class="text-slate-500 hover:text-red-400 p-1" onclick="deleteProfile(\'' + p.__backendId + '\')"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div>';
+    '<div class="text-xs text-slate-500">' + (p.entity_type==='corporate'?'นิติบุคคล':'บุคคลธรรมดา') + ' · ' + (p.tax_id||'ไม่มีเลขภาษี') + '</div>' +
+    '<div class="text-xs text-slate-500">' + (p.email||'') + (p.phone?' · '+p.phone:'') + '</div></div>' +
+    badge + edit + del + '</div>';
 }
 
 function filterProfiles(role, btn) {
@@ -789,30 +818,51 @@ async function updateProfile(e, id) {
 }
 
 // ===== PAGE: PROJECTS =====
+var _projectView = localStorage.getItem('DSR_prv') || 'list';
 function renderProjects(el) {
-  const projects = getProjects();
-  let rows = projects.length === 0 ? '<p class="text-slate-500 text-sm py-8 text-center">ยังไม่มีโปรเจกต์</p>' :
-    projects.map(function(p) {
-      const q = getQuotation(p.project_id);
-      const total = q ? q.grand_total||0 : 0;
-      const inst = getInstallments(p.project_id);
-      const paidAmt = inst.filter(function(i) { return i.status === 'paid'; }).reduce(function(s,i) { return s + (i.amount||0); }, 0);
-      const displayStatus = getProjectDisplayStatus(p);
-      const isDone = displayStatus === 'done';
-      const delBtn = '<button class="px-2 py-1 rounded-lg bg-slate-700 hover:bg-red-700 text-slate-400 hover:text-white text-xs flex items-center gap-1" onclick="deleteProject(\'' + p.project_id + '\',event)" title="ลบโปรเจกต์"><i data-lucide="trash-2" class="w-3 h-3"></i></button>';
-      return '<div class="p-4 bg-slate-900 border border-slate-800 rounded-xl card-hover cursor-pointer flex items-center gap-4" onclick="navigate(\'project-detail\',\'' + p.project_id + '\')">' +
-        '<div class="w-10 h-10 rounded-lg ' + (isDone ? 'bg-emerald-900/50 text-emerald-400' : 'bg-orange-900/50 text-orange-400') + ' flex items-center justify-center"><i data-lucide="' + (isDone ? 'folder-check' : 'folder') + '" class="w-5 h-5"></i></div>' +
-        '<div class="flex-1 min-w-0"><div class="text-sm font-medium text-white">' + (p.project_name||'Untitled') + '</div><div class="text-xs text-slate-500">' + (p.client_name||'-') + ' · สร้างเมื่อ ' + fmtDate(p.created_at) + '</div></div>' +
-        '<div class="text-right mr-2"><div class="mono text-sm text-white">' + fmt(total) + '</div><div class="text-xs text-slate-500">' + inst.length + ' งวด · ' + fmt(paidAmt) + ' ชำระแล้ว</div></div>' +
-        '<span class="' + badgeClass(displayStatus) + '">' + displayStatus + '</span>' +
-        '<div class="flex items-center gap-1 ml-2" onclick="event.stopPropagation()">' + delBtn + '</div></div>';
-    }).join('');
+  var projects = getProjects();
+  var isGrid = _projectView === 'grid';
+  var search = (el._prsearch || '').toLowerCase();
+  var filtered = projects.filter(function(p){ return !search || (p.project_name||'').toLowerCase().includes(search) || (p.client_name||'').toLowerCase().includes(search); });
+  var grid = isGrid ? 'grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3' : 'space-y-2';
+  var b1 = 'p-2 rounded-lg border '+(!isGrid?'border-orange-500 text-orange-400':'border-slate-700 text-slate-400');
+  var b2 = 'p-2 rounded-lg border '+(isGrid?'border-orange-500 text-orange-400':'border-slate-700 text-slate-400');
+  var cards = filtered.map(function(p) {
+    var q = getQuotation(p.project_id);
+    var total = q ? q.grand_total||0 : 0;
+    var inst = getInstallments(p.project_id);
+    var paidAmt = inst.filter(function(i){return i.status==='paid';}).reduce(function(s,i){return s+(i.amount||0);},0);
+    var ds = getProjectDisplayStatus(p);
+    var isDone = ds==='done';
+    var ic = isDone?'bg-emerald-900/50 text-emerald-400':'bg-orange-900/50 text-orange-400';
+    var srch = ((p.project_name||'')+' '+(p.client_name||'')).toLowerCase();
+    var delBtn = '<button class="text-slate-500 hover:text-red-400 p-1" onclick="deleteProject(\'' + p.project_id + '\',event)"><i data-lucide="trash-2" class="w-3 h-3"></i></button>';
+    var nav = 'navigate(\'project-detail\',\'' + p.project_id + '\')';
+    if (isGrid) return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col gap-3 card-hover cursor-pointer" data-s="'+srch+'" onclick="'+nav+'">' +
+      '<div class="flex items-start justify-between"><div class="w-10 h-10 rounded-lg '+ic+' flex items-center justify-center"><i data-lucide="'+(isDone?'folder-check':'folder')+'" class="w-5 h-5"></i></div><span class="'+badgeClass(ds)+'">'+ds+'</span></div>' +
+      '<div class="flex-1 min-w-0"><div class="text-sm font-semibold text-white leading-tight mb-0.5">'+(p.project_name||'Untitled')+'</div><div class="text-xs text-slate-500">'+(p.client_name||'-')+'</div></div>' +
+      '<div class="border-t border-slate-800 pt-2 flex items-end justify-between"><div><div class="mono text-sm font-bold text-white">'+fmt(total)+'</div><div class="text-xs text-slate-500">'+inst.length+' งวด · '+fmt(paidAmt)+' จ่ายแล้ว</div></div>' +
+      '<div onclick="event.stopPropagation()">'+delBtn+'</div></div></div>';
+    return '<div class="p-4 bg-slate-900 border border-slate-800 rounded-xl card-hover cursor-pointer flex items-center gap-4" data-s="'+srch+'" onclick="'+nav+'">' +
+      '<div class="w-10 h-10 rounded-lg '+ic+' flex items-center justify-center"><i data-lucide="'+(isDone?'folder-check':'folder')+'" class="w-5 h-5"></i></div>' +
+      '<div class="flex-1 min-w-0"><div class="text-sm font-medium text-white">'+(p.project_name||'Untitled')+'</div><div class="text-xs text-slate-500">'+(p.client_name||'-')+' · '+fmtDate(p.created_at)+'</div></div>' +
+      '<div class="text-right mr-2"><div class="mono text-sm text-white">'+fmt(total)+'</div><div class="text-xs text-slate-500">'+inst.length+' งวด · '+fmt(paidAmt)+' ชำระแล้ว</div></div>' +
+      '<span class="'+badgeClass(ds)+'">'+ds+'</span>' +
+      '<div onclick="event.stopPropagation()">'+delBtn+'</div></div>';
+  }).join('');
   el.innerHTML = '<div class="p-6 fade-in">' +
-    '<div class="flex justify-between items-center mb-6"><div><h1 class="text-2xl font-bold text-white">โปรเจกต์ทั้งหมด</h1><p class="text-slate-400 text-sm">' + projects.length + ' โปรเจกต์</p></div>' +
+    '<div class="flex justify-between items-center mb-4"><div><h1 class="text-2xl font-bold text-white">โปรเจกต์ทั้งหมด</h1><p class="text-slate-400 text-sm">'+projects.length+' โปรเจกต์</p></div>' +
     '<button class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="showProjectForm()"><i data-lucide="plus" class="w-4 h-4"></i> สร้างโปรเจกต์</button></div>' +
+    '<div class="flex gap-2 mb-4">' +
+    '<div class="relative flex-1"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i><input type="text" placeholder="ค้นหาโปรเจกต์..." oninput="_projSearch(this,el)" class="w-full pl-9 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 focus:outline-none"></div>' +
+    '<button class="'+b1+'" onclick="_projectView=\'list\';localStorage.setItem(\'DSR_prv\',\'list\');renderProjects(document.getElementById(\'main-content\'))"><i data-lucide="list" class="w-4 h-4"></i></button>' +
+    '<button class="'+b2+'" onclick="_projectView=\'grid\';localStorage.setItem(\'DSR_prv\',\'grid\');renderProjects(document.getElementById(\'main-content\'))"><i data-lucide="layout-grid" class="w-4 h-4"></i></button>' +
+    '</div>' +
     '<div id="project-form-area"></div>' +
-    '<div class="space-y-2">' + rows + '</div></div>';
+    '<div id="projects-list" class="'+grid+'">'+(filtered.length===0?'<p class="text-slate-500 text-sm py-8 text-center">ยังไม่มีโปรเจกต์</p>':cards)+'</div></div>';
+  if (window.lucide) lucide.createIcons();
 }
+function _projSearch(inp,el){el._prsearch=inp.value;var q=inp.value.toLowerCase();document.querySelectorAll('#projects-list>[data-s]').forEach(function(c){c.style.display=(!q||c.dataset.s.includes(q))?'':'none';});}
 
 function showProjectForm() {
   const clients = getProfiles('client');
@@ -1468,7 +1518,7 @@ async function removeSplitFromPie(splitId, projId, profitBase) {
 function renderSplitCard(sp, q, project, installments, projId) {
   const expenses = byType('project_expense').filter(function(e) { return e.partner_split_id === sp.__backendId && e.deduct_from_partner; });
   const totalExp = expenses.reduce(function(s,e) { return s + (e.expense_amount||0); }, 0);
-  const netTotal = roundHU((sp.partner_net_amount||0) - totalExp);
+  const netTotal = roundHU((sp.partner_amount||0) - totalExp);  // gross before WHT
   const partnerInsts = getPartnerInsts(sp.__backendId);
   const paidInstsTotal = partnerInsts.filter(function(i) { return i.paid; }).reduce(function(s,i) { return s + (i.amount||0); }, 0);
   const useInstallments = partnerInsts.length > 0;
@@ -1694,52 +1744,77 @@ function renderQuotations(el) {
 }
 
 // ===== PAGE: INSTALLMENTS =====
+var _instView = localStorage.getItem('DSR_iv') || 'list';
 function renderInstallments(el) {
-  const installments = byType('installment').sort(function(a,b) { return (b.created_at||'').localeCompare(a.created_at||''); });
-  el.innerHTML = '<div class="p-6 fade-in"><h1 class="text-2xl font-bold text-white mb-1">งวดงาน & การชำระเงิน</h1><p class="text-slate-400 text-sm mb-6">' + installments.length + ' งวด</p>' +
-    '<div class="space-y-2">' +
-    (installments.length === 0 ? '<p class="text-slate-500 text-sm text-center py-8">ยังไม่มีงวดงาน</p>' :
-      installments.map(function(inst) {
-        const proj = allData.find(r => r.record_type === 'project' && r.project_id === inst.project_id);
-        return '<div class="p-3 bg-slate-900 border border-slate-800 rounded-xl flex items-center gap-3 card-hover cursor-pointer" onclick="navigate(\'project-detail\',\'' + inst.project_id + '\')">' +
-          '<div class="flex-1"><div class="text-sm text-white">' + (proj ? proj.project_name : '-') + ' · งวด ' + ((inst.installment_index||0)+1) + '</div><div class="text-xs text-slate-500">กำหนด: ' + fmtDate(inst.due_date) + (inst.invoice_number ? ' · ' + inst.invoice_number : '') + '</div></div>' +
-          '<div class="mono text-sm text-white">' + fmt(inst.amount||0) + '</div>' +
-          '<span class="' + badgeClass(inst.status) + '">' + (inst.status||'draft') + '</span></div>';
-      }).join('')) + '</div></div>';
+  var insts = byType('installment').sort(function(a,b){return (b.created_at||'').localeCompare(a.created_at||'');});
+  var isGrid = _instView === 'grid';
+  var grid = isGrid ? 'grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3' : 'space-y-2';
+  var b1='p-2 rounded-lg border '+(!isGrid?'border-orange-500 text-orange-400':'border-slate-700 text-slate-400');
+  var b2='p-2 rounded-lg border '+(isGrid?'border-orange-500 text-orange-400':'border-slate-700 text-slate-400');
+  var cards = insts.map(function(inst) {
+    var proj = allData.find(function(r){return r.record_type==='project'&&r.project_id===inst.project_id;});
+    var name = proj ? proj.project_name : '-';
+    var nav = 'navigate(\'project-detail\',\'' + inst.project_id + '\')';
+    if (isGrid) return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col gap-2 card-hover cursor-pointer" onclick="'+nav+'">' +
+      '<div class="flex items-start justify-between"><div class="w-9 h-9 rounded-lg bg-orange-900/50 text-orange-400 flex items-center justify-center"><i data-lucide="calendar" class="w-4 h-4"></i></div><span class="'+badgeClass(inst.status)+'">'+(inst.status||'draft')+'</span></div>' +
+      '<div class="text-sm font-semibold text-white leading-tight">'+name+'</div>' +
+      '<div class="text-xs text-slate-500">งวด '+((inst.installment_index||0)+1)+' · '+fmtDate(inst.due_date)+'</div>' +
+      '<div class="border-t border-slate-800 pt-2"><div class="mono text-sm font-bold text-white">'+fmt(inst.amount||0)+'</div></div></div>';
+    return '<div class="p-3 bg-slate-900 border border-slate-800 rounded-xl flex items-center gap-3 card-hover cursor-pointer" onclick="'+nav+'">' +
+      '<div class="flex-1"><div class="text-sm text-white">'+name+' · งวด '+((inst.installment_index||0)+1)+'</div><div class="text-xs text-slate-500">กำหนด: '+fmtDate(inst.due_date)+(inst.invoice_number?' · '+inst.invoice_number:'')+'</div></div>' +
+      '<div class="mono text-sm text-white">'+fmt(inst.amount||0)+'</div><span class="'+badgeClass(inst.status)+'">'+(inst.status||'draft')+'</span></div>';
+  }).join('');
+  el.innerHTML = '<div class="p-6 fade-in">' +
+    '<div class="flex justify-between items-center mb-4"><div><h1 class="text-2xl font-bold text-white">งวดงาน & การชำระเงิน</h1><p class="text-slate-400 text-sm">'+insts.length+' งวด</p></div></div>' +
+    '<div class="flex gap-2 mb-4">' +
+    '<button class="'+b1+'" onclick="_instView=\'list\';localStorage.setItem(\'DSR_iv\',\'list\');renderInstallments(document.getElementById(\'main-content\'))"><i data-lucide="list" class="w-4 h-4"></i></button>' +
+    '<button class="'+b2+'" onclick="_instView=\'grid\';localStorage.setItem(\'DSR_iv\',\'grid\');renderInstallments(document.getElementById(\'main-content\'))"><i data-lucide="layout-grid" class="w-4 h-4"></i></button>' +
+    '</div>' +
+    '<div class="'+grid+'">'+(insts.length===0?'<p class="text-slate-500 text-sm py-8 text-center">ยังไม่มีงวดงาน</p>':cards)+'</div></div>';
+  if(window.lucide)lucide.createIcons();
 }
 
 // ===== PAGE: PARTNERS =====
+var _partnersView = localStorage.getItem('DSR_pav') || 'list';
 function renderPartners(el) {
-  const splits = byType('partner_split');
-  const paidInstallments = byType('partner_installment').filter(function(i) { return i.paid; });
-  const totalPaid = splits.filter(s => s.partner_paid).reduce(function(s,sp) { return s + (sp.partner_net_amount||0); }, 0) + paidInstallments.reduce(function(s,i) { return s + (i.net_amount||0); }, 0);
-  const totalDue = splits.filter(s => !s.partner_paid).reduce(function(s,sp) { return s + (sp.partner_net_amount||0); }, 0);
-  const receiptCount = splits.filter(function(sp) { return sp.partner_paid; }).length + paidInstallments.length;
-  el.innerHTML = '<div class="p-6 fade-in"><h1 class="text-2xl font-bold text-white mb-1">แบ่งจ่ายพาร์ทเนอร์</h1>' +
-    '<p class="text-slate-400 text-sm mb-4">จ่ายแล้ว: <span class="mono text-emerald-400">' + fmt(totalPaid) + '</span> · ค้างจ่าย: <span class="mono text-amber-400">' + fmt(totalDue) + '</span></p>' +
-    '<div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">' +
-      '<div class="bg-slate-900 border border-slate-800 rounded-xl p-3"><div class="text-xs text-slate-500">Partner Receipt</div><div class="mono text-lg text-sky-400 font-bold">' + receiptCount + '</div><div class="text-[11px] text-slate-500">ใบเสร็จพาร์ทเนอร์ที่ออกได้</div></div>' +
-      '<div class="bg-slate-900 border border-slate-800 rounded-xl p-3"><div class="text-xs text-slate-500">WHT Partner</div><div class="mono text-lg text-red-400 font-bold">' + receiptCount + '</div><div class="text-[11px] text-slate-500">เอกสารหัก ณ ที่จ่ายคู่กัน</div></div>' +
-      '<div class="bg-slate-900 border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-3"><div><div class="text-xs text-slate-500">Document Center</div><div class="text-sm text-white">รวมใบเสร็จ/พิมพ์</div></div><button type="button" class="px-3 py-2 bg-sky-700/60 hover:bg-sky-700 text-sky-100 rounded-lg text-xs" onclick="navigate(\'documents\')">ไปหน้าเอกสาร</button></div>' +
+  var splits = byType('partner_split');
+  var paidInsts = byType('partner_installment').filter(function(i){return i.paid;});
+  var totalPaid = splits.filter(function(s){return s.partner_paid;}).reduce(function(s,sp){return s+(sp.partner_net_amount||0);},0)+paidInsts.reduce(function(s,i){return s+(i.net_amount||0);},0);
+  var totalDue = splits.filter(function(s){return !s.partner_paid;}).reduce(function(s,sp){return s+(sp.partner_net_amount||0);},0);
+  var rcnt = splits.filter(function(sp){return sp.partner_paid;}).length+paidInsts.length;
+  var isGrid = _partnersView === 'grid';
+  var grid = isGrid ? 'grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3' : 'space-y-2';
+  var b1='p-2 rounded-lg border '+(!isGrid?'border-orange-500 text-orange-400':'border-slate-700 text-slate-400');
+  var b2='p-2 rounded-lg border '+(isGrid?'border-orange-500 text-orange-400':'border-slate-700 text-slate-400');
+  var cards = splits.map(function(sp) {
+    var proj = allData.find(function(r){return r.record_type==='project'&&r.project_id===sp.project_id;});
+    var hasPaid = sp.partner_paid || byType('partner_installment').filter(function(pi){return pi.split_id===sp.__backendId&&pi.paid;}).length>0;
+    var nav = 'navigate(\'project-detail\',\'' + sp.project_id + '\')';
+    if (isGrid) return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col gap-2 card-hover cursor-pointer" onclick="'+nav+'">' +
+      '<div class="flex items-start justify-between"><div class="w-9 h-9 rounded-full bg-purple-900/50 text-purple-400 flex items-center justify-center font-bold text-sm">'+esc((sp.partner_name||'?')[0])+'</div>'+(hasPaid?'<span class="badge badge-paid">จ่ายแล้ว</span>':'<span class="badge badge-draft">รอจ่าย</span>')+'</div>' +
+      '<div class="text-sm font-semibold text-white truncate">'+esc(sp.partner_name)+'</div>' +
+      '<div class="text-xs text-slate-500 truncate">'+(proj?proj.project_name:'-')+'</div>' +
+      '<div class="border-t border-slate-800 pt-2 flex justify-between"><div class="mono text-sm font-bold text-white">'+fmt(sp.partner_net_amount||0)+'</div><div class="text-xs text-slate-500">WHT '+(sp.partner_wht_rate||3)+'%</div></div></div>';
+    return '<div class="p-3 bg-slate-900 border border-slate-800 rounded-xl flex items-center gap-3 card-hover cursor-pointer" onclick="'+nav+'">' +
+      '<div class="w-8 h-8 rounded-full bg-purple-900/50 text-purple-400 flex items-center justify-center text-xs font-bold">'+esc((sp.partner_name||'?')[0])+'</div>' +
+      '<div class="flex-1 min-w-0"><div class="text-sm text-white truncate">'+esc(sp.partner_name)+' · '+esc(proj?proj.project_name:'-')+'</div><div class="text-xs text-slate-500">WHT '+(sp.partner_wht_rate||3)+'%</div></div>' +
+      '<div class="mono text-sm text-white">'+fmt(sp.partner_net_amount||0)+'</div>' +
+      (hasPaid?'<span class="badge badge-paid">จ่ายแล้ว</span>':'<span class="badge badge-draft">รอจ่าย</span>')+'</div>';
+  }).join('');
+  el.innerHTML = '<div class="p-6 fade-in">' +
+    '<div class="flex justify-between items-center mb-2"><div><h1 class="text-2xl font-bold text-white">แบ่งจ่ายพาร์ทเนอร์</h1>' +
+    '<p class="text-slate-400 text-sm">จ่ายแล้ว: <span class="mono text-emerald-400">'+fmt(totalPaid)+'</span> · ค้างจ่าย: <span class="mono text-amber-400">'+fmt(totalDue)+'</span></p></div>' +
+    '<div class="flex gap-1">' +
+    '<button class="'+b1+'" onclick="_partnersView=\'list\';localStorage.setItem(\'DSR_pav\',\'list\');renderPartners(document.getElementById(\'main-content\'))"><i data-lucide="list" class="w-4 h-4"></i></button>' +
+    '<button class="'+b2+'" onclick="_partnersView=\'grid\';localStorage.setItem(\'DSR_pav\',\'grid\');renderPartners(document.getElementById(\'main-content\'))"><i data-lucide="layout-grid" class="w-4 h-4"></i></button>' +
+    '</div></div>' +
+    '<div class="grid grid-cols-3 gap-3 mb-4">' +
+    '<div class="bg-slate-900 border border-slate-800 rounded-xl p-3"><div class="text-xs text-slate-500">Partner Receipt</div><div class="mono text-lg text-sky-400 font-bold">'+rcnt+'</div></div>' +
+    '<div class="bg-slate-900 border border-slate-800 rounded-xl p-3"><div class="text-xs text-slate-500">WHT Partner</div><div class="mono text-lg text-red-400 font-bold">'+rcnt+'</div></div>' +
+    '<div class="bg-slate-900 border border-slate-800 rounded-xl p-3 flex items-center justify-between"><div class="text-xs text-slate-500">Document Center</div><button class="px-3 py-1.5 bg-sky-700/60 text-sky-100 rounded text-xs" onclick="navigate(\'documents\')">ไปหน้าเอกสาร</button></div>' +
     '</div>' +
-    '<div class="space-y-2">' +
-    (splits.length === 0 ? '<p class="text-slate-500 text-sm text-center py-8">ยังไม่มีรายการแบ่งจ่าย</p>' :
-      splits.map(function(sp) {
-        const proj = allData.find(r => r.record_type === 'project' && r.project_id === sp.project_id);
-        const paidInsts = byType('partner_installment').filter(function(pi) { return pi.split_id === sp.__backendId && pi.paid; });
-        const hasReceipt = sp.partner_paid || paidInsts.length > 0;
-        const receiptButtons = hasReceipt
-          ? '<div class="flex flex-wrap gap-2 justify-end">' +
-              (sp.partner_paid ? '<button type="button" class="px-2 py-1 bg-sky-900/50 text-sky-300 rounded text-xs hover:bg-sky-900" onclick="event.stopPropagation(); previewPartnerReceipt(\'' + sp.__backendId + '\')">Receipt</button><button type="button" class="px-2 py-1 bg-red-900/40 text-red-300 rounded text-xs hover:bg-red-900" onclick="event.stopPropagation(); previewWHT(\'' + sp.__backendId + '\')">WHT</button>' : '') +
-              (paidInsts.length > 0 ? paidInsts.map(function(pi) { return '<button type="button" class="px-2 py-1 bg-sky-900/50 text-sky-300 rounded text-xs hover:bg-sky-900" onclick="event.stopPropagation(); previewPartnerReceipt(\'pinst:' + pi.__backendId + '\')">Receipt งวด ' + ((pi.inst_index||0)+1) + '</button>'; }).join('') : '') +
-            '</div>'
-          : '<span class="badge badge-draft">รอจ่าย</span>';
-        return '<div class="p-3 bg-slate-900 border border-slate-800 rounded-xl flex items-center gap-3 card-hover cursor-pointer" onclick="navigate(\'project-detail\',\'' + sp.project_id + '\')">' +
-          '<div class="w-8 h-8 rounded-full bg-purple-900/50 text-purple-400 flex items-center justify-center text-xs font-bold">' + esc((sp.partner_name||'?')[0]) + '</div>' +
-          '<div class="flex-1 min-w-0"><div class="text-sm text-white truncate">' + esc(sp.partner_name) + ' · ' + esc(proj ? proj.project_name : '-') + '</div><div class="text-xs text-slate-500">WHT ' + (sp.partner_wht_rate||3) + '% · ' + (hasReceipt ? 'มี Partner Receipt อัตโนมัติแล้ว' : 'ยังไม่จ่าย / ยังไม่มี Receipt') + '</div></div>' +
-          '<div class="mono text-sm text-white flex-shrink-0">' + fmt(sp.partner_net_amount||0) + '</div>' +
-          '<div class="flex-shrink-0">' + receiptButtons + '</div></div>';
-      }).join('')) + '</div></div>';
+    '<div class="'+grid+'">'+(splits.length===0?'<p class="text-slate-500 text-sm py-8 text-center">ยังไม่มีรายการแบ่งจ่าย</p>':cards)+'</div></div>';
+  if(window.lucide)lucide.createIcons();
 }
 
 // ===== PAGE: DOCUMENTS =====
