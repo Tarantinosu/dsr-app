@@ -581,18 +581,23 @@ function navigate(page, ctx) {
 function renderPage() {
   const main = document.getElementById('main-content');
   const ctx = window._navCtx;
-  switch(currentPage) {
-    case 'dashboard':      renderDashboard(main); break;
-    case 'profiles':       renderProfiles(main); break;
-    case 'projects':       renderProjects(main); break;
-    case 'quotations':     renderQuotations(main); break;
-    case 'installments':   renderInstallments(main); break;
-    case 'partners':       renderPartners(main); break;
-    case 'documents':      renderDocuments(main); break;
-    case 'logs':           renderLogs(main); break;
-    case 'settings':       renderSettings(main); break;
-    case 'project-detail': renderProjectDetail(main, ctx); break;
-    default:               renderDashboard(main);
+  try {
+    switch(currentPage) {
+      case 'dashboard':      renderDashboard(main); break;
+      case 'profiles':       renderProfiles(main); break;
+      case 'projects':       renderProjects(main); break;
+      case 'quotations':     renderQuotations(main); break;
+      case 'installments':   renderInstallments(main); break;
+      case 'partners':       renderPartners(main); break;
+      case 'documents':      renderDocuments(main); break;
+      case 'logs':           renderLogs(main); break;
+      case 'settings':       renderSettings(main); break;
+      case 'project-detail': renderProjectDetail(main, ctx); break;
+      default:               renderDashboard(main);
+    }
+  } catch(err) {
+    console.error('[DSR+ renderPage error]', err);
+    if (main) main.innerHTML = '<div class="p-6"><div class="bg-red-900/40 border border-red-700 rounded-xl p-4 text-red-300 text-sm"><b>⚠ เกิดข้อผิดพลาด:</b><pre class="mt-2 text-xs overflow-auto whitespace-pre-wrap">' + (err && err.stack ? err.stack : String(err)) + '</pre></div></div>';
   }
   if (window.lucide) lucide.createIcons();
 }
@@ -1770,8 +1775,7 @@ function showPartnerInstForm(splitId) {
   const totalExp = expenses.reduce((s,e) => s + (e.expense_amount||0), 0);
   const grossTotal = roundHU((sp.partner_amount||0) - totalExp);
   const whtRate = sp.partner_wht_rate || 3;
-  const spVatEnabled = !!sp.partner_vat_enabled;
-  const spVatRate = sp.partner_vat_rate || 7;
+  const { vatEnabled: spVatEnabled, vatRate: spVatRate } = resolvePartnerVat(sp);
   const existInsts = getPartnerInsts(splitId);
   const nextInstIndex = existInsts.length ? Math.max.apply(null, existInsts.map(function(i) { return i.inst_index || 0; })) + 1 : 0;
   const nextInstNo = nextInstIndex + 1;
@@ -1816,8 +1820,9 @@ function updatePartnerInstCalc(splitId, grossTotal, whtRate, vatEnabled, vatRate
   const vatAmt = vatEnabled ? roundHU(amount * ((vatRate || 7) / 100)) : 0;
   const whtAmt = roundHU(amount * ((whtRate || 3) / 100));
   const netAmt = roundHU(amount + vatAmt - whtAmt);
+  const pctDisplay = pct ? Number(pct).toFixed(2).replace(/\.?0+$/, '') || '0' : '0';
   const vatPart = vatEnabled ? ' · VAT <span class="mono text-sky-400">+' + fmt(vatAmt) + '</span>' : '';
-  if (calcEl) calcEl.innerHTML = 'คิดเป็น <span class="mono text-white">' + (pct ? Number(pct).toFixed(4).replace(/0+$/,'').replace(/\.$/,'0') : '0') + '%</span> = ก่อนหัก <span class="mono text-white">' + fmt(amount) + '</span> บาท' + vatPart + ' · WHT <span class="mono text-amber-400">-' + fmt(whtAmt) + '</span> · สุทธิ <span class="mono text-emerald-400">' + fmt(netAmt) + '</span>';
+  if (calcEl) calcEl.innerHTML = 'คิดเป็น <span class="mono text-white">' + pctDisplay + '%</span> = ก่อนหัก <span class="mono text-white">' + fmt(amount) + '</span> บาท' + vatPart + ' · WHT <span class="mono text-amber-400">-' + fmt(whtAmt) + '</span> · สุทธิ <span class="mono text-emerald-400">' + fmt(netAmt) + '</span>';
 }
 
 async function savePartnerInst(splitId) {
@@ -1831,8 +1836,7 @@ async function savePartnerInst(splitId) {
   const totalExp = expenses.reduce((s,e) => s + (e.expense_amount||0), 0);
   const grossTotal = roundHU((sp.partner_amount||0) - totalExp);
   const whtRate = sp.partner_wht_rate || 3;
-  const instVatEnabled = !!sp.partner_vat_enabled;
-  const instVatRate = sp.partner_vat_rate || 7;
+  const { vatEnabled: instVatEnabled, vatRate: instVatRate } = resolvePartnerVat(sp);
   const mode = modeEl ? modeEl.value : 'amount';
   let percentValue = parseFloat(pctEl ? pctEl.value : '') || 0;
   let amt = parseMoneyInput(amtEl ? amtEl.value : '0');
@@ -1872,8 +1876,9 @@ async function payPartnerInst(instId) {
   if (!inst) return;
   const sp = allData.find(r => r.__backendId === inst.split_id);
   const instWhtRate = inst.wht_rate || (sp ? (sp.partner_wht_rate || 3) : 3);
-  const instVatEnabled = inst.vat_enabled !== undefined ? !!inst.vat_enabled : !!(sp && sp.partner_vat_enabled);
-  const instVatRate = inst.vat_rate || (sp ? (sp.partner_vat_rate || 7) : 7);
+  const spVat = sp ? resolvePartnerVat(sp) : { vatEnabled: false, vatRate: 7 };
+  const instVatEnabled = inst.vat_enabled !== undefined ? !!inst.vat_enabled : spVat.vatEnabled;
+  const instVatRate = inst.vat_rate || spVat.vatRate;
   const instVatAmount = instVatEnabled ? roundHU((inst.amount || 0) * instVatRate / 100) : 0;
   const instWhtAmount = roundHU((inst.amount || 0) * instWhtRate / 100);
   const instNetAmount = roundHU((inst.amount || 0) + instVatAmount - instWhtAmount);
