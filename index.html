@@ -744,10 +744,9 @@ function showProfileForm() {
     '<div><label class="text-xs text-slate-400">สถานะ</label><select id="pf-entity" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="individual">บุคคลธรรมดา</option><option value="corporate">นิติบุคคล</option></select></div>' +
     '<div class="col-span-2"><label class="text-xs text-slate-400">ชื่อ / บริษัท</label><input id="pf-name" required class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="ชื่อเต็ม"></div>' +
     '<div><label class="text-xs text-slate-400">เลขผู้เสียภาษี (13 หลัก)</label><input id="pf-tax" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white mono" placeholder="0000000000000" maxlength="13"></div>' +
-    '<div><label class="text-xs text-slate-400">อัตราหัก ณ ที่จ่าย (%)</label><select id="pf-wht" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="0">0%</option><option value="1">1%</option><option value="3" selected>3%</option><option value="5">5%</option></select></div>
-    <div><label class="text-xs text-slate-400">จด VAT</label><select id="pf-vat-enabled" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="false">ไม่จด VAT</option><option value="true" selected>จด VAT 7%</option></select></div>
-    <div><label class="text-xs text-slate-400">VAT (%)</label><input id="pf-vat-rate" type="number" value="7" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white mono"></div>
-' +
+    '<div><label class="text-xs text-slate-400">อัตราหัก ณ ที่จ่าย (%)</label><select id="pf-wht" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="0">0%</option><option value="1">1%</option><option value="3" selected>3%</option><option value="5">5%</option></select></div>' +
+    '<div><label class="text-xs text-slate-400">จด VAT</label><select id="pf-vat-enabled" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="false">ไม่จด VAT</option><option value="true" selected>จด VAT 7%</option></select></div>' +
+    '<div><label class="text-xs text-slate-400">VAT (%)</label><input id="pf-vat-rate" type="number" value="7" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white mono"></div>' +
     '<div class="col-span-2"><label class="text-xs text-slate-400">ที่อยู่</label><input id="pf-addr" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="ที่อยู่ตามทะเบียนภาษี"></div>' +
     '<div><label class="text-xs text-slate-400">อีเมล</label><input id="pf-email" type="email" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="email@example.com"></div>' +
     '<div><label class="text-xs text-slate-400">โทรศัพท์</label><input id="pf-phone" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="0XX-XXX-XXXX"></div>' +
@@ -796,10 +795,9 @@ function editProfile(id) {
     '<div><label class="text-xs text-slate-400">สถานะ</label><select id="pf-entity" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="individual"' + (p.entity_type==='individual'?' selected':'') + '>บุคคลธรรมดา</option><option value="corporate"' + (p.entity_type==='corporate'?' selected':'') + '>นิติบุคคล</option></select></div>' +
     '<div class="col-span-2"><label class="text-xs text-slate-400">ชื่อ / บริษัท</label><input id="pf-name" required value="' + (p.name||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"></div>' +
     '<div><label class="text-xs text-slate-400">เลขผู้เสียภาษี (13 หลัก)</label><input id="pf-tax" value="' + (p.tax_id||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white mono" maxlength="13"></div>' +
-    '<div><label class="text-xs text-slate-400">อัตราหัก ณ ที่จ่าย (%)</label><select id="pf-wht" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="0"' + (p.default_wht==0?' selected':'') + '>0%</option><option value="1"' + (p.default_wht==1?' selected':'') + '>1%</option><option value="3"' + (p.default_wht==3?' selected':'') + '>3%</option><option value="5"' + (p.default_wht==5?' selected':'') + '>5%</option></select></div>
-    <div><label class="text-xs text-slate-400">จด VAT</label><select id="pf-vat-enabled" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="false"' + (!p.vat_enabled?' selected':'') + '>ไม่จด VAT</option><option value="true"' + (p.vat_enabled?' selected':'') + '>จด VAT 7%</option></select></div>
-    <div><label class="text-xs text-slate-400">VAT (%)</label><input id="pf-vat-rate" type="number" value="' + (p.vat_rate||7) + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white mono"></div>
-' +
+    '<div><label class="text-xs text-slate-400">อัตราหัก ณ ที่จ่าย (%)</label><select id="pf-wht" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="0"' + (p.default_wht==0?' selected':'') + '>0%</option><option value="1"' + (p.default_wht==1?' selected':'') + '>1%</option><option value="3"' + (p.default_wht==3?' selected':'') + '>3%</option><option value="5"' + (p.default_wht==5?' selected':'') + '>5%</option></select></div>' +
+    '<div><label class="text-xs text-slate-400">จด VAT</label><select id="pf-vat-enabled" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="false"' + (!p.vat_enabled?' selected':'') + '>ไม่จด VAT</option><option value="true"' + (p.vat_enabled?' selected':'') + '>จด VAT 7%</option></select></div>' +
+    '<div><label class="text-xs text-slate-400">VAT (%)</label><input id="pf-vat-rate" type="number" value="' + (p.vat_rate||7) + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white mono"></div>' +
     '<div class="col-span-2"><label class="text-xs text-slate-400">ที่อยู่</label><input id="pf-addr" value="' + (p.address||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"></div>' +
     '<div><label class="text-xs text-slate-400">อีเมล</label><input id="pf-email" type="email" value="' + (p.email||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"></div>' +
     '<div><label class="text-xs text-slate-400">โทรศัพท์</label><input id="pf-phone" value="' + (p.phone||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"></div>' +
@@ -1339,13 +1337,12 @@ async function cascadePartnerSplits(projId) {
       ? roundHU(profitBase * (sp.partner_share_value||0) / 100)
       : roundHU(sp.partner_share_value || 0);
     const whtRate = sp.partner_wht_rate || 3;
-    const vatEnabled = !!sp.partner_vat_enabled;
-    const vatRate = sp.partner_vat_rate || 7;
+    const { vatEnabled, vatRate } = resolvePartnerVat(sp);
     const vatAmt = vatEnabled ? roundHU(partnerAmt * vatRate / 100) : 0;
     const whtAmt = roundHU(partnerAmt * whtRate / 100);
     await window.dataSdk.update(Object.assign({}, sp, {
       partner_amount: partnerAmt,
-      partner_vat_amount: vatAmt,
+      partner_vat_enabled: vatEnabled, partner_vat_rate: vatRate, partner_vat_amount: vatAmt,
       partner_wht_amount: whtAmt,
       partner_net_amount: roundHU(partnerAmt + vatAmt - whtAmt)
     }));
@@ -1442,6 +1439,19 @@ async function deleteInstRecord(id) {
   });
 }
 
+// ── Helper: ดึง VAT info จาก split record → fallback ไป partner profile ──
+function resolvePartnerVat(sp) {
+  if (sp.partner_vat_enabled !== undefined) {
+    return { vatEnabled: !!sp.partner_vat_enabled, vatRate: sp.partner_vat_rate || 7 };
+  }
+  // fallback: ค้นหาจาก profile
+  const profile = getProfiles('partner').find(function(p) { return p.name === sp.partner_name; });
+  return {
+    vatEnabled: profile ? !!profile.vat_enabled : false,
+    vatRate: profile ? (parseFloat(profile.vat_rate) || 7) : 7
+  };
+}
+
 // ===== PIE ALLOCATION =====
 const PIE_COLORS = ['#8b5cf6','#3b82f6','#10b981','#f59e0b','#ef4444','#ec4899','#06b6d4','#84cc16'];
 
@@ -1484,8 +1494,7 @@ function renderAllocRow(sp, idx, profitBase, projId) {
   const pct = sp.partner_share_value || 0;
   const amount = roundHU(profitBase * pct / 100); // gross partner share before VAT/WHT
   const whtRate = sp.partner_wht_rate || 3;
-  const vatEnabled = !!sp.partner_vat_enabled;
-  const vatRate = sp.partner_vat_rate || 7;
+  const { vatEnabled, vatRate } = resolvePartnerVat(sp);
   const vatAmt = vatEnabled ? roundHU(amount * vatRate / 100) : 0;
   const whtAmt = roundHU(amount * whtRate / 100);
   const netAmt = roundHU(amount + vatAmt - whtAmt);
@@ -1528,13 +1537,12 @@ async function equalizeUnlocked(projId, profitBase) {
       : equalPct;
     const partnerAmt = roundHU(profitBase * pct / 100);
     const whtRate = sp.partner_wht_rate || 3;
-    const vatEnabled = !!sp.partner_vat_enabled;
-    const vatRate = sp.partner_vat_rate || 7;
+    const { vatEnabled, vatRate } = resolvePartnerVat(sp);
     const vatAmt = vatEnabled ? roundHU(partnerAmt * vatRate / 100) : 0;
     const whtAmt = roundHU(partnerAmt * whtRate / 100);
     return Object.assign({}, sp, {
       partner_share_value: pct, partner_amount: partnerAmt,
-      partner_vat_amount: vatAmt,
+      partner_vat_enabled: vatEnabled, partner_vat_rate: vatRate, partner_vat_amount: vatAmt,
       partner_wht_amount: whtAmt, partner_net_amount: roundHU(partnerAmt + vatAmt - whtAmt)
     });
   });
@@ -1639,14 +1647,13 @@ async function _applyAllocChange(splitId, projId, profitBase, newPct) {
 function _buildSplitUpdate(sp, pct, profitBase) {
   const partnerAmt = roundHU(profitBase * pct / 100);
   const whtRate = sp.partner_wht_rate || 3;
-  const vatEnabled = !!sp.partner_vat_enabled;
-  const vatRate = sp.partner_vat_rate || 7;
+  const { vatEnabled, vatRate } = resolvePartnerVat(sp);
   const vatAmt = vatEnabled ? roundHU(partnerAmt * vatRate / 100) : 0;
   const whtAmt = roundHU(partnerAmt * whtRate / 100);
   const netAmt = roundHU(partnerAmt + vatAmt - whtAmt);
   return Object.assign({}, sp, {
     partner_share_value: roundPct(pct), partner_amount: partnerAmt,
-    partner_vat_amount: vatAmt,
+    partner_vat_enabled: vatEnabled, partner_vat_rate: vatRate, partner_vat_amount: vatAmt,
     partner_wht_amount: whtAmt, partner_net_amount: netAmt
   });
 }
@@ -1676,8 +1683,7 @@ async function removeSplitFromPie(splitId, projId, profitBase) {
 function renderSplitCard(sp, q, project, installments, projId) {
   const expenses = byType('project_expense').filter(function(e) { return e.partner_split_id === sp.__backendId && e.deduct_from_partner; });
   const totalExp = expenses.reduce(function(s,e) { return s + (e.expense_amount||0); }, 0);
-  const vatEnabled = !!sp.partner_vat_enabled;
-  const vatRate = sp.partner_vat_rate || 7;
+  const { vatEnabled, vatRate } = resolvePartnerVat(sp);
   const vatAmt = vatEnabled ? roundHU((sp.partner_amount||0) * vatRate / 100) : 0;
   const netTotal = roundHU((sp.partner_amount||0) + vatAmt - totalExp);  // before WHT deduction
   const partnerInsts = getPartnerInsts(sp.__backendId);
