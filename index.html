@@ -6,6 +6,7 @@
   <title>DSR+ | DOPIOUS SHARE REVENUE</title>
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.263.0/dist/umd/lucide.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script>
 // ===== GOOGLE SHEETS SDK — shared multi-user via Apps Script =====
 (function () {
@@ -964,6 +965,636 @@ async function deleteProject(projId, e) {
   });
 }
 
+
+
+// ===== BOQ AI EXTRACT EXTENSION (Merged from dsr-pricing-v2) =====
+const BOQ_CAT_COLOR = {
+  Preliminaries:'#f97316',
+  EarthworkFoundation:'#a16207',
+  Structural:'#64748b',
+  Architectural:'#60a5fa',
+  Electrical:'#facc15',
+  SanitaryPlumbing:'#38bdf8',
+  HVAC:'#22c55e',
+  FireProtection:'#ef4444',
+  ExternalLandscape:'#84cc16',
+  FurnitureEquipment:'#a78bfa',
+  Other:'#fbbf24'
+};
+const BOQ_AI_MARGINS = {
+  Preliminaries:{ pct:10, marketMax:15, reason:'งานเตรียมการเป็นค่า setup หน้างานและบริหารความพร้อมก่อนเริ่มก่อสร้าง ควรบวกแบบระวังเพราะลูกค้าเทียบยอดรวมได้ง่าย' },
+  EarthworkFoundation:{ pct:12, marketMax:18, reason:'งานดินและฐานรากมีความเสี่ยงเรื่องสภาพพื้นที่ ปริมาณจริง และงานแก้ไขหน้างาน จึงควรมีเผื่อความเสี่ยงมากกว่าวัสดุทั่วไป' },
+  Structural:{ pct:10, marketMax:15, reason:'งานโครงสร้างมีราคาวัสดุและค่าแรงที่ตรวจเทียบได้ แต่มีความรับผิดชอบสูง จึงควรบวกช่วงกลางแบบไม่โดดเกินตลาด' },
+  Architectural:{ pct:12, marketMax:18, reason:'งานสถาปัตย์และตกแต่งมีรายละเอียดผิว งานเก็บจบ และความเสี่ยงการแก้ไข จึงเหมาะกับ markup ระดับกลาง' },
+  Electrical:{ pct:10, marketMax:15, reason:'งานระบบไฟฟ้ามีราคาวัสดุเทียบตลาดได้ แต่ต้องรับผิดชอบการติดตั้ง ทดสอบ และความปลอดภัย จึงควรบวกในช่วงกลาง' },
+  SanitaryPlumbing:{ pct:10, marketMax:15, reason:'งานสุขาภิบาลและประปามีความเสี่ยงเรื่องรั่วซึม การทดสอบ และการแก้ไขหลังติดตั้ง จึงควรเผื่อกำไรและความรับผิดชอบ' },
+  HVAC:{ pct:10, marketMax:16, reason:'งานปรับอากาศมีต้นทุนอุปกรณ์ที่เทียบราคาได้ แต่มีค่าออกแบบระบบ ติดตั้ง และ commissioning จึงบวกได้ในช่วงกลาง' },
+  FireProtection:{ pct:8, marketMax:14, reason:'งานป้องกันอัคคีภัยเกี่ยวข้องกับมาตรฐานและอุปกรณ์เฉพาะทาง ควรบวกอย่างเหมาะสมและตรวจราคาจาก supplier เพิ่ม' },
+  ExternalLandscape:{ pct:12, marketMax:18, reason:'งานภายนอกและภูมิทัศน์มีความเสี่ยงจากพื้นที่จริง สภาพอากาศ และปริมาณหน้างาน จึงควรมี markup กลาง' },
+  FurnitureEquipment:{ pct:15, marketMax:25, reason:'งานเฟอร์นิเจอร์และครุภัณฑ์มีรายละเอียดผลิตจริง งานวัดหน้างาน และความคาดหวังด้านคุณภาพ จึงบวกได้สูงกว่างานวัสดุทั่วไป' },
+  Other:{ pct:10, marketMax:15, reason:'รายการอื่น ๆ ใช้ markup แบบ conservative เพื่อไม่ให้ยอดรวมดูโดดเกินตลาด และควรตรวจสอบหมวดอีกครั้งถ้าข้อมูลไม่ชัด' }
+};
+let _boqAI = null;
+
+function getProjectBOQs(projId) {
+  return byType('boq').filter(function(b){ return b.project_id === projId; })
+    .sort(function(a,b){ return String(b.created_at || '').localeCompare(String(a.created_at || '')); });
+}
+function latestProjectBOQ(projId, quotationId) {
+  var list = getProjectBOQs(projId);
+  if (quotationId) list = list.filter(function(b){ return b.quotation_id === quotationId; });
+  return list[0] || null;
+}
+function boqParseMoney(v) {
+  return parseFloat(String(v == null ? '' : v).replace(/,/g,'').trim()) || 0;
+}
+function boqPercent(n) {
+  return Math.round(((Number(n)||0) + Number.EPSILON) * 100) / 100;
+}
+function guessBOQCategory(hint) {
+  var raw = String(hint || '').trim();
+  var cats = Object.keys(BOQ_AI_MARGINS || {});
+  if (cats.indexOf(raw) >= 0) return raw;
+  var h = raw.toLowerCase();
+  if (/prelim|general requirement|mobilization|mobilisation|temporary|site office|site setup|insurance|survey|setting out|hoarding|fence|project sign|office|เตรียมการ|สำนักงานสนาม|รั้วชั่วคราว|ป้ายโครงการ|ไฟฟ้า.?ประปาชั่วคราว|ประกันภัย|สำรวจ|วางผัง|ควบคุมงาน/.test(h)) return 'Preliminaries';
+  if (/earth|excavat|backfill|fill|soil|pile|foundation|footing|ground beam|retaining|ฐานราก|เสาเข็ม|ตอกเสาเข็ม|เจาะเสาเข็ม|ขุดดิน|ถมดิน|ปรับระดับ|คานคอดิน|ดินพัง/.test(h)) return 'EarthworkFoundation';
+  if (/struct|column|beam|slab|stair|rebar|formwork|concrete wall|rc|reinforce|คอนกรีตเสริมเหล็ก|โครงสร้าง|เสา|คาน|พื้น|บันได|แบบหล่อ|เหล็กเสริม|ผนังคอนกรีต/.test(h)) return 'Structural';
+  if (/architect|masonry|brick|plaster|ceiling|paint|door|window|roof|tile|floor|wall finish|cladding|finishing|ก่ออิฐ|ฉาบปูน|กระเบื้อง|ฝ้า|เพดาน|ทาสี|ประตู|หน้าต่าง|หลังคา|ตกแต่งผิว|ผนัง|พื้นไม้|ลามิเนต/.test(h)) return 'Architectural';
+  if (/electrical|electric|mdb|db|lighting|lamp|switch|socket|plug|ground|cctv|fire alarm|communication|data|wire|cable|ไฟฟ้า|สายไฟ|ตู้ไฟ|ดวงโคม|สวิตช์|ปลั๊ก|กราวด์|สื่อสาร|กล้องวงจรปิด|แจ้งเหตุเพลิง/.test(h)) return 'Electrical';
+  if (/sanitary|plumbing|water supply|wastewater|drain|rainwater|sanitaryware|toilet|pump|tank|manhole|pipe|สุขาภิบาล|ประปา|ท่อน้ำดี|ท่อน้ำเสีย|สุขภัณฑ์|ถังเก็บน้ำ|ปั๊มน้ำ|บ่อพัก|ระบายน้ำฝน/.test(h)) return 'SanitaryPlumbing';
+  if (/hvac|air.?condition|aircon|ventilat|duct|chiller|vrv|split type|fresh air|exhaust|ปรับอากาศ|ระบายอากาศ|แอร์|ท่อลม|ดักท์|ชิลเลอร์|ระบาย/.test(h)) return 'HVAC';
+  if (/fire protection|sprinkler|fire hose|fire pump|extinguisher|hydrant|ดับเพลิง|ป้องกันอัคคีภัย|สปริงเกอร์|ตู้สายฉีด|ถังดับเพลิง|ปั๊มดับเพลิง|หัวฉีด/.test(h)) return 'FireProtection';
+  if (/external|landscape|pavement|road|parking|fence|gate|walkway|garden|drainage outside|ภายนอก|ภูมิทัศน์|ถนน|ลานจอด|รั้วถาวร|ทางเดิน|สวน|ระบายน้ำภายนอก/.test(h)) return 'ExternalLandscape';
+  if (/furniture|equipment|built.?in|loose furniture|fixture|appliance|ครุภัณฑ์|เฟอร์นิเจอร์|บิลท์อิน|บิ้วอิน|ลอยตัว|เครื่องใช้|อุปกรณ์เฉพาะ|display|counter|shelf|cabinet|ตู้|เคาน์เตอร์|ชั้นวาง/.test(h)) return 'FurnitureEquipment';
+  return 'Other';
+}
+function renderNoQuotationOptions(projId) {
+  return '<div class="py-8">' +
+    '<div class="text-center mb-5"><p class="text-slate-500 mb-1">ยังไม่มีใบเสนอราคา</p><p class="text-xs text-slate-600">เลือกวิธีสร้างเอกสารสำหรับโปรเจกต์นี้</p></div>' +
+    '<div class="grid md:grid-cols-2 gap-3 max-w-3xl mx-auto">' +
+      '<button class="text-left bg-slate-900 border border-slate-800 rounded-xl p-5 hover:border-orange-500/60 hover:bg-slate-800/60 transition" onclick="createQuotation(\'' + projId + '\')">' +
+        '<div class="w-10 h-10 rounded-lg bg-orange-600/20 text-orange-400 flex items-center justify-center mb-3"><i data-lucide="file-text" class="w-5 h-5"></i></div>' +
+        '<div class="text-white font-semibold mb-1">สร้างใบเสนอราคาอย่างเดียว</div>' +
+        '<div class="text-xs text-slate-500 leading-5">ใช้ฟอร์มเดิม กรอกรายการเอง เหมาะกับงานรายการไม่เยอะ</div>' +
+      '</button>' +
+      '<button class="text-left bg-slate-900 border border-orange-500/40 rounded-xl p-5 hover:border-orange-400 hover:bg-orange-950/20 transition" onclick="openBOQAiPanel(\'' + projId + '\',\'\')">' +
+        '<div class="w-10 h-10 rounded-lg bg-orange-600 text-white flex items-center justify-center mb-3"><i data-lucide="sparkles" class="w-5 h-5"></i></div>' +
+        '<div class="text-white font-semibold mb-1">สร้างใบเสนอราคา + BOQ AI Extract</div>' +
+        '<div class="text-xs text-slate-500 leading-5">อัปโหลด PDF / Excel / รูป Supplier แล้วให้ AI ช่วยอ่านรายการและกระจายกำไร</div>' +
+      '</button>' +
+    '</div>' +
+  '</div>';
+}
+function renderProjectBOQSummary(projId, quotationId) {
+  var b = latestProjectBOQ(projId, quotationId);
+  if (!b) {
+    return '<div class="mt-4 mb-5 bg-slate-950/50 border border-dashed border-slate-700 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">' +
+      '<div><div class="text-sm font-semibold text-white">BOQ Attachment</div><div class="text-xs text-slate-500 mt-1">ยังไม่มี BOQ แนบกับใบเสนอราคานี้</div></div>' +
+      '<button class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs flex items-center gap-1" onclick="openBOQAiPanel(\'' + projId + '\',\'' + (quotationId || '') + '\')"><i data-lucide="sparkles" class="w-3 h-3"></i> BOQ AI Extract</button>' +
+    '</div>';
+  }
+  return '<div class="mt-4 mb-5 bg-slate-950/60 border border-orange-500/30 rounded-xl p-4">' +
+    '<div class="flex flex-wrap items-start justify-between gap-3">' +
+      '<div><div class="text-sm font-semibold text-white flex items-center gap-2"><i data-lucide="paperclip" class="w-4 h-4 text-orange-400"></i> BOQ Attachment</div>' +
+      '<div class="text-xs text-slate-500 mt-1">' + esc(b.supplier_file_name || 'BOQ') + ' · ' + fmtDate(b.created_at) + '</div></div>' +
+      '<div class="flex gap-2 flex-wrap">' +
+        '<button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs" onclick="previewLatestBOQ(\'' + projId + '\',\'' + (quotationId || '') + '\')">Preview BOQ</button>' +
+        '<button class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs" onclick="openBOQAiPanel(\'' + projId + '\',\'' + (quotationId || '') + '\')">เปิด BOQ AI Extract</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="grid grid-cols-2 md:grid-cols-4 gap-2 mt-4">' +
+      '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Supplier Cost</div><div class="mono text-sm text-slate-200">' + fmt(b.supplier_total||0) + '</div></div>' +
+      '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Profit</div><div class="mono text-sm text-orange-400">+' + fmt(b.profit_amount||0) + '</div></div>' +
+      '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Final</div><div class="mono text-sm text-emerald-400">' + fmt(b.final_total||0) + '</div></div>' +
+      '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Margin</div><div class="mono text-sm text-purple-400">' + (b.profit_percent || 0) + '%</div></div>' +
+    '</div>' +
+  '</div>';
+}
+function openBOQAiPanel(projId, quotationId) {
+  var project = allData.find(function(r){ return r.record_type === 'project' && r.project_id === projId; });
+  var q = quotationId ? allData.find(function(r){ return r.__backendId === quotationId; }) : getQuotation(projId);
+  _boqAI = {
+    projectId: projId,
+    quotationId: q ? q.__backendId : '',
+    projectName: project ? (project.project_name || 'Untitled') : 'Untitled',
+    clientName: project ? (project.client_name || '-') : '-',
+    stage: 'upload',
+    fileName: '', fileType: '', error: '', running: false,
+    apiKey: localStorage.getItem('dsr_api_key') || '',
+    items: [], targetProfit: '', aiDone: false
+  };
+  renderBOQAiPanel();
+}
+function closeBOQAiPanel() {
+  var el = document.getElementById('boq-ai-modal');
+  if (el) el.remove();
+  _boqAI = null;
+}
+function ensureBOQAiModal() {
+  var el = document.getElementById('boq-ai-modal');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'boq-ai-modal';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+function renderBOQAiPanel() {
+  if (!_boqAI) return;
+  var el = ensureBOQAiModal();
+  var sup = _boqAI.items.reduce(function(s,r){ return s + (Number(r.supplierTotal)||0); }, 0);
+  var finalTotal = _boqAI.items.reduce(function(s,r){ return s + (Number(r.final)||Number(r.supplierTotal)||0); }, 0);
+  var profit = roundHU(finalTotal - sup);
+  var margin = sup > 0 ? boqPercent(profit / sup * 100) : 0;
+  var content = '';
+  if (_boqAI.stage === 'upload' || _boqAI.stage === 'extracting') content = renderBOQUploadStep();
+  else content = renderBOQPricingStep(sup, finalTotal, profit, margin);
+  el.innerHTML = '<div class="fixed inset-0 z-[99990] bg-black/70 backdrop-blur-sm flex items-stretch justify-center p-0 md:p-5">' +
+    '<div class="w-full max-w-7xl bg-[#080808] border border-slate-800 md:rounded-2xl overflow-hidden shadow-2xl flex flex-col">' +
+      '<div class="px-4 md:px-5 py-3 border-b border-slate-800 flex items-center justify-between gap-3 bg-slate-950/80">' +
+        '<div class="min-w-0"><div class="flex items-center gap-2"><span class="w-8 h-8 rounded-lg bg-orange-600 flex items-center justify-center text-white font-bold text-xs">DSR+</span><div><div class="text-sm font-semibold text-white">BOQ AI Extract</div><div class="text-xs text-slate-500 truncate">' + esc(_boqAI.projectName) + ' · ' + esc(_boqAI.clientName) + '</div></div></div></div>' +
+        '<div class="flex items-center gap-2"><button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs" onclick="closeBOQAiPanel()">ปิด</button></div>' +
+      '</div>' + content +
+    '</div></div>';
+  if (window.lucide) lucide.createIcons();
+}
+function renderBOQUploadStep() {
+  var isExtracting = _boqAI.stage === 'extracting';
+  var apiBox = '<div class="mt-4 bg-slate-950 border border-slate-800 rounded-xl p-4">' +
+    '<div class="text-xs text-slate-400 mb-2">Anthropic API Key สำหรับอ่าน PDF / รูปภาพ</div>' +
+    '<div class="flex flex-col md:flex-row gap-2"><input id="boq-api-key" type="password" value="' + esc(_boqAI.apiKey || '') + '" placeholder="sk-ant-api03-..." autocomplete="off" autocapitalize="off" spellcheck="false" oninput="boqApiKeyDraftChanged(this.value)" class="flex-1 px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:border-orange-500 focus:outline-none"><button class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-xs rounded-lg" onclick="saveBOQApiKey()">Save Key</button><button class="px-3 py-2 bg-orange-600 hover:bg-orange-500 text-xs rounded-lg text-white" onclick="testBOQApiKey()">Test Key</button></div>' +
+    '<div class="text-[10px] text-slate-600 mt-2 leading-5">Excel/CSV ใช้ได้ทันที ส่วน PDF/JPG/PNG ต้องใช้ API key ตัวเต็มเท่านั้น ห้ามมี ... หรือช่องว่าง/ขึ้นบรรทัดใหม่</div></div>';
+  return '<div class="flex-1 overflow-auto p-5 md:p-8">' +
+    '<div class="max-w-4xl mx-auto">' +
+      '<div class="text-center mb-6"><h2 class="text-2xl font-light text-white mb-2">Upload Supplier BOQ</h2><p class="text-sm text-slate-500">PDF · Excel · CSV · JPG · PNG</p></div>' +
+      '<div ondrop="boqDrop(event)" ondragover="event.preventDefault();this.classList.add(\'border-orange-500\')" ondragleave="this.classList.remove(\'border-orange-500\')" onclick="document.getElementById(\'boq-file-input\').click()" class="cursor-pointer border-2 border-dashed border-slate-700 rounded-2xl p-8 md:p-12 text-center bg-slate-950/60 hover:border-orange-500/70 transition">' +
+        '<input id="boq-file-input" type="file" class="hidden" accept=".pdf,.xlsx,.xls,.csv,.jpg,.jpeg,.png" onchange="boqFileChanged(this)">' +
+        '<div class="w-16 h-16 rounded-2xl bg-orange-600/15 text-orange-400 flex items-center justify-center mx-auto mb-4"><i data-lucide="upload-cloud" class="w-8 h-8"></i></div>' +
+        '<div class="font-semibold text-white mb-1">' + (isExtracting ? 'กำลังอ่านไฟล์...' : 'ลากไฟล์มาวาง หรือคลิกเพื่อเลือกไฟล์') + '</div>' +
+        '<div class="text-xs text-slate-500">AI จะล็อคโครงสร้างรายการ Supplier และให้ปรับเฉพาะราคา/กำไร</div>' +
+      '</div>' + apiBox +
+      (_boqAI.error ? '<div class="mt-4 bg-red-950/50 border border-red-800 rounded-xl p-3 text-sm text-red-300">' + esc(_boqAI.error) + '</div>' : '') +
+      '<div class="grid md:grid-cols-3 gap-3 mt-5">' +
+        '<div class="bg-slate-950 border border-slate-800 rounded-xl p-4"><div class="text-orange-400 text-xs font-semibold mb-2">1. Extract</div><div class="text-xs text-slate-500 leading-5">อ่านรายการ จำนวน หน่วย ราคา และจัดหมวด 10 หมวด BOQ มาตรฐาน เช่น เตรียมการ / ฐานราก / โครงสร้าง / สถาปัตย์ / งานระบบ</div></div>' +
+        '<div class="bg-slate-950 border border-slate-800 rounded-xl p-4"><div class="text-orange-400 text-xs font-semibold mb-2">2. Add Profit</div><div class="text-xs text-slate-500 leading-5">ใส่กำไรที่ต้องการเป็นช่องตัวเลข ปรับได้ ไม่ใช่แชท</div></div>' +
+        '<div class="bg-slate-950 border border-slate-800 rounded-xl p-4"><div class="text-orange-400 text-xs font-semibold mb-2">3. Sync Quotation</div><div class="text-xs text-slate-500 leading-5">บันทึก BOQ แนบโปรเจกต์ และส่งยอดรวมกลับไปใบเสนอราคา</div></div>' +
+      '</div>' +
+    '</div></div>';
+}
+function renderBOQPricingStep(supplierTotal, finalTotal, profit, margin) {
+  var cats = {};
+  _boqAI.items.forEach(function(r){ cats[r.category] = (cats[r.category] || 0) + 1; });
+  var rows = _boqAI.items.map(function(r,i){
+    var catColor = BOQ_CAT_COLOR[r.category] || '#888';
+    return '<tr class="border-b border-slate-800">' +
+      '<td class="py-2 pr-2 text-slate-500 text-xs">' + (i+1) + '</td>' +
+      '<td class="py-2 pr-2"><div class="text-xs text-white leading-5">' + esc(r.item || '-') + '</div><div class="text-[10px] text-slate-500">' + esc(r.qty || 0) + ' ' + esc(r.unit || '') + ' × ' + fmt(r.supplierUnit || 0) + '</div></td>' +
+      '<td class="py-2 pr-2"><span class="px-2 py-0.5 rounded-full text-[10px]" style="background:' + catColor + '22;color:' + catColor + '">' + esc(r.category || 'Other') + '</span></td>' +
+      '<td class="py-2 pr-2 text-right mono text-xs text-slate-300">' + fmt(r.supplierTotal || 0) + '</td>' +
+      '<td class="py-2 pr-2"><input type="text" inputmode="decimal" value="' + fmt(r.add || 0) + '" class="w-28 px-2 py-1 bg-slate-900 border border-slate-700 rounded text-xs mono text-right text-orange-300 focus:border-orange-500 focus:outline-none" onfocus="this.select()" oninput="boqManualAddInput(' + i + ',this)"></td>' +
+      '<td class="py-2 text-right mono text-xs font-semibold text-emerald-400" id="boq-final-' + i + '">' + fmt(r.final || r.supplierTotal || 0) + '</td>' +
+    '</tr>';
+  }).join('');
+  return '<div class="flex-1 overflow-auto p-4 md:p-6">' +
+    '<div class="grid lg:grid-cols-[330px_1fr] gap-5">' +
+      '<aside class="space-y-4">' +
+        '<div class="bg-slate-950 border border-slate-800 rounded-2xl p-5">' +
+          '<div class="text-xs text-slate-500 uppercase tracking-wider mb-1">Supplier Cost</div><div class="text-3xl mono text-white font-semibold mb-1">' + fmt(supplierTotal) + '</div><div class="text-xs text-slate-600">' + _boqAI.items.length + ' รายการ · ' + Object.keys(cats).length + ' หมวด</div>' +
+          '<div class="h-px bg-slate-800 my-4"></div>' +
+          '<label class="text-xs text-slate-400">Desired Profit / กำไรที่ต้องการ</label>' +
+          '<div class="flex items-center gap-2 mt-2"><input id="boq-target-profit" type="text" inputmode="decimal" value="' + esc(_boqAI.targetProfit || '') + '" placeholder="เช่น 80000" class="flex-1 px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white mono text-right focus:border-orange-500 focus:outline-none" oninput="boqTargetProfitInput(this.value)" onkeydown="if(event.key===\'Enter\') runBOQAI()"><span class="text-xs text-slate-500">THB</span></div>' +
+          '<button class="mt-3 w-full px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm font-semibold flex items-center justify-center gap-2" onclick="runBOQAI()"><i data-lucide="sparkles" class="w-4 h-4"></i> APPLY AI PRICING</button>' +
+        '</div>' +
+        '<div class="bg-slate-950 border border-slate-800 rounded-2xl p-5 space-y-3">' +
+          '<div class="flex justify-between text-sm"><span class="text-slate-500">Profit Added</span><span class="mono text-orange-400" id="boq-profit-total">+' + fmt(profit) + '</span></div>' +
+          '<div class="flex justify-between text-sm"><span class="text-slate-500">Final Selling Price</span><span class="mono text-emerald-400 font-semibold" id="boq-final-total">' + fmt(finalTotal) + '</span></div>' +
+          '<div class="flex justify-between text-sm"><span class="text-slate-500">Margin</span><span class="mono text-purple-400" id="boq-margin-total">' + margin + '%</span></div>' +
+          '<div class="h-px bg-slate-800"></div>' +
+          '<button class="w-full px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-semibold" onclick="saveBOQToProject()">Confirm + Sync Quotation</button>' +
+          '<button class="w-full px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm" onclick="previewCurrentBOQ()">Preview BOQ</button>' +
+        '</div>' +
+      '</aside>' +
+      '<main class="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden">' +
+        '<div class="p-4 border-b border-slate-800 flex items-center justify-between gap-2"><div><div class="text-sm font-semibold text-white">Final BOQ</div><div class="text-xs text-slate-500">แก้ไขกำไรต่อรายการได้โดยตรง</div></div><button class="px-3 py-1.5 bg-slate-800 text-xs rounded-lg" onclick="boqAddBlankRow()">+ Add Row</button></div>' +
+        '<div class="overflow-auto"><table class="w-full text-sm"><thead><tr class="border-b border-slate-800 text-[10px] uppercase tracking-wider text-slate-500"><th class="text-left py-2 px-3 w-10">#</th><th class="text-left py-2">Item</th><th class="text-left py-2 w-28">Cat</th><th class="text-right py-2 w-32">Supplier</th><th class="text-right py-2 w-36">Add</th><th class="text-right py-2 px-3 w-32">Final</th></tr></thead><tbody id="boq-items-body">' + rows + '</tbody></table></div>' +
+      '</main>' +
+    '</div></div>';
+}
+
+function sanitizeBOQApiKey(value) {
+  return String(value || '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\s\"'`]+/g, '')
+    .trim();
+}
+function validateBOQApiKeyValue(key) {
+  key = sanitizeBOQApiKey(key);
+  if (!key) return 'กรุณาใส่ Anthropic API Key ก่อน';
+  if (key.indexOf('...') >= 0 || key.indexOf('…') >= 0) return 'API Key ที่ใส่ยังเป็นแบบย่อ/ถูกซ่อนอยู่ ต้องสร้าง key ใหม่แล้ว Copy ตัวเต็มเท่านั้น';
+  if (!/^sk-ant-/i.test(key)) return 'API Key ไม่ถูกต้อง: ต้องขึ้นต้นด้วย sk-ant-';
+  if (key.length < 60) return 'API Key ดูสั้นเกินไป น่าจะ copy มาไม่ครบ';
+  return '';
+}
+function boqApiKeyDraftChanged(value) {
+  if (!_boqAI) return;
+  _boqAI.apiKey = sanitizeBOQApiKey(value);
+}
+async function testBOQApiKey() {
+  if (!_boqAI) return;
+  var inp = document.getElementById('boq-api-key');
+  var key = sanitizeBOQApiKey(inp ? inp.value : _boqAI.apiKey);
+  var err = validateBOQApiKeyValue(key);
+  if (err) { _boqAI.error = err; renderBOQAiPanel(); return; }
+  _boqAI.apiKey = key;
+  localStorage.setItem('dsr_api_key', key);
+  _boqAI.error = 'กำลังทดสอบ API Key...';
+  renderBOQAiPanel();
+  try {
+    var response = await fetch('https://api.anthropic.com/v1/messages', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'x-api-key':key, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
+      body:JSON.stringify({ model:'claude-sonnet-4-6', max_tokens:16, messages:[{ role:'user', content:'Reply OK only.' }] })
+    });
+    var data = await response.json().catch(function(){ return {}; });
+    if (!response.ok || data.error) throw new Error((data.error && data.error.message) || ('HTTP ' + response.status));
+    _boqAI.error = '';
+    showToast('API Key ใช้งานได้แล้ว');
+    renderBOQAiPanel();
+  } catch(err2) {
+    _boqAI.error = 'API Key ยังใช้ไม่ได้: ' + ((err2 && err2.message) ? err2.message : 'ตรวจสอบ key อีกครั้ง');
+    renderBOQAiPanel();
+  }
+}
+function saveBOQApiKey() {
+  if (!_boqAI) return;
+  var v = (document.getElementById('boq-api-key') || {}).value || '';
+  var key = sanitizeBOQApiKey(v);
+  var err = validateBOQApiKeyValue(key);
+  if (err) { _boqAI.error = err; renderBOQAiPanel(); return; }
+  _boqAI.apiKey = key;
+  localStorage.setItem('dsr_api_key', key);
+  _boqAI.error = '';
+  showToast('บันทึก API Key แล้ว');
+}
+function boqDrop(e) {
+  e.preventDefault();
+  var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (file) processBOQFile(file);
+}
+function boqFileChanged(input) {
+  var file = input && input.files && input.files[0];
+  if (file) processBOQFile(file);
+}
+async function processBOQFile(file) {
+  if (!_boqAI) return;
+  var keyInput = document.getElementById('boq-api-key');
+  if (keyInput && keyInput.value) {
+    _boqAI.apiKey = sanitizeBOQApiKey(keyInput.value);
+    if (_boqAI.apiKey && !validateBOQApiKeyValue(_boqAI.apiKey)) localStorage.setItem('dsr_api_key', _boqAI.apiKey);
+  }
+  _boqAI.stage = 'extracting'; _boqAI.error = ''; _boqAI.fileName = file.name; _boqAI.fileType = (file.name.split('.').pop() || '').toLowerCase();
+  renderBOQAiPanel();
+  try {
+    var ext = _boqAI.fileType;
+    var rows = [];
+    if (['xlsx','xls','csv'].indexOf(ext) >= 0) rows = await parseBOQSpreadsheet(file, ext);
+    else if (['pdf','jpg','jpeg','png'].indexOf(ext) >= 0) rows = await extractBOQWithVision(file);
+    else throw new Error('รองรับเฉพาะ PDF, Excel, CSV, JPG, PNG');
+    if (!rows.length) throw new Error('ไม่พบรายการ BOQ ในไฟล์นี้');
+    _boqAI.items = rows.map(function(r,i){
+      var qty = Number(r.qty || r.quantity || 1) || 1;
+      var unitPrice = Number(r.unitPrice || r.unit_price || r.rate || 0) || 0;
+      var total = Number(r.total || r.amount || r.supplierTotal || (qty * unitPrice)) || 0;
+      if (!unitPrice && qty) unitPrice = roundHU(total / qty);
+      return { id:i+1, item:String(r.item || r.description || ('Item ' + (i+1))).trim(), qty:qty, unit:String(r.unit || 'lot'), supplierUnit:unitPrice, supplierTotal:roundHU(total), category:guessBOQCategory(r.category || r.item || r.description), add:0, final:roundHU(total) };
+    });
+    _boqAI.stage = 'pricing';
+  } catch(err) {
+    _boqAI.stage = 'upload';
+    _boqAI.error = err && err.message ? err.message : 'อ่านไฟล์ไม่สำเร็จ';
+  }
+  renderBOQAiPanel();
+}
+function parseBOQSpreadsheet(file, ext) {
+  return new Promise(function(resolve, reject){
+    if (!window.XLSX) return reject(new Error('XLSX library ยังโหลดไม่เสร็จ กรุณาลองอีกครั้ง'));
+    var reader = new FileReader();
+    reader.onload = function(e){
+      try {
+        var wb = ext === 'csv' ? XLSX.read(e.target.result, {type:'string'}) : XLSX.read(e.target.result, {type:'array'});
+        var ws = wb.Sheets[wb.SheetNames[0]];
+        var raw = XLSX.utils.sheet_to_json(ws, {defval:''});
+        if (!raw.length) throw new Error('Spreadsheet ว่าง');
+        var keys = Object.keys(raw[0]);
+        var find = function(patterns){ return keys.find(function(k){ return patterns.some(function(p){ return String(k).toLowerCase().indexOf(p) >= 0; }); }) || ''; };
+        var itemKey = find(['item','description','desc','work','name','particulars','รายการ','รายละเอียด']) || keys[0];
+        var qtyKey = find(['qty','quantity','quant','จำนวน']);
+        var unitKey = find(['unit','uom','measure','หน่วย']);
+        var priceKey = find(['unit price','rate','price','unit_price','unitprice','ราคา/หน่วย','ราคาต่อหน่วย']);
+        var totalKey = find(['total','amount','sum','subtotal','รวม','จำนวนเงิน']);
+        var catKey = find(['category','cat','section','type','group','หมวด']);
+        var rows = raw.filter(function(r){ return String(r[itemKey] || '').trim(); }).map(function(r){
+          var qty = boqParseMoney(qtyKey ? r[qtyKey] : 1) || 1;
+          var unitPrice = boqParseMoney(priceKey ? r[priceKey] : 0);
+          var total = boqParseMoney(totalKey ? r[totalKey] : 0);
+          if (!total) total = qty * unitPrice;
+          if (!unitPrice && qty) unitPrice = total / qty;
+          return { item:String(r[itemKey] || '').trim(), qty:qty, unit:String(unitKey ? (r[unitKey] || 'lot') : 'lot'), unitPrice:roundHU(unitPrice), total:roundHU(total), category:catKey ? String(r[catKey] || '') : '' };
+        });
+        resolve(rows);
+      } catch(err) { reject(err); }
+    };
+    reader.onerror = function(){ reject(new Error('อ่านไฟล์ไม่สำเร็จ')); };
+    if (ext === 'csv') reader.readAsText(file); else reader.readAsArrayBuffer(file);
+  });
+}
+function boqFileToBase64(file) {
+  return new Promise(function(resolve,reject){
+    var r = new FileReader();
+    r.onload = function(){ resolve(String(r.result || '').split(',')[1] || ''); };
+    r.onerror = function(){ reject(new Error('อ่านไฟล์ไม่สำเร็จ')); };
+    r.readAsDataURL(file);
+  });
+}
+async function extractBOQWithVision(file) {
+  var key = sanitizeBOQApiKey((_boqAI && _boqAI.apiKey) || localStorage.getItem('dsr_api_key') || '');
+  var keyErr = validateBOQApiKeyValue(key);
+  if (keyErr) throw new Error(keyErr);
+  if (_boqAI) _boqAI.apiKey = key;
+  localStorage.setItem('dsr_api_key', key);
+  var base64 = await boqFileToBase64(file);
+  var isPdf = file.name.toLowerCase().endsWith('.pdf');
+  var mediaType = isPdf ? 'application/pdf' : (file.type || 'image/jpeg');
+  var contentBlock = isPdf ? { type:'document', source:{ type:'base64', media_type:'application/pdf', data:base64 } } : { type:'image', source:{ type:'base64', media_type:mediaType, data:base64 } };
+  var systemPrompt = 'You are a BOQ extraction AI for construction/fit-out work in Thailand. Extract ONLY line items that exist in the supplier file. Do not create categories or items that are not present. Return ONLY raw JSON array. Each item: {"item":"string","qty":number,"unit":"string","unitPrice":number,"total":number,"category":"Preliminaries|EarthworkFoundation|Structural|Architectural|Electrical|SanitaryPlumbing|HVAC|FireProtection|ExternalLandscape|FurnitureEquipment|Other"}. Preserve item names. If total is missing calculate qty*unitPrice. Category guide: Preliminaries=site setup/temp work, EarthworkFoundation=soil/piles/foundation, Structural=columns/beams/slabs/rebar/formwork, Architectural=walls/ceilings/floors/paint/doors/windows/roof/finishes, Electrical=wiring/MDB/DB/lighting/switch/socket/ground/CCTV/fire alarm, SanitaryPlumbing=water/waste/drain/sanitaryware/pump/tank, HVAC=air conditioning/duct/ventilation, FireProtection=sprinkler/fire hose/extinguisher/fire pump, ExternalLandscape=road/parking/fence/landscape/walkway/external drainage, FurnitureEquipment=built-in/loose furniture/equipment/appliances.';
+  var response = await fetch('https://api.anthropic.com/v1/messages', {
+    method:'POST',
+    headers:{ 'Content-Type':'application/json', 'x-api-key':key, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
+    body:JSON.stringify({ model:'claude-sonnet-4-6', max_tokens:5000, system:systemPrompt, messages:[{ role:'user', content:[ contentBlock, {type:'text', text:'Extract BOQ line items as JSON array only.'} ] }] })
+  });
+  var data = await response.json();
+  if (data.error) {
+    var msg = data.error.message || 'API error';
+    if (/invalid x-api-key/i.test(msg)) msg = 'invalid x-api-key: Key ไม่ถูกต้อง/ไม่ใช่ตัวเต็ม/ถูก copy มาเป็นแบบย่อ ให้กด Create key ใหม่แล้ว copy ตัวเต็ม';
+    throw new Error(msg);
+  }
+  var text = (data.content || []).filter(function(b){ return b.type === 'text'; }).map(function(b){ return b.text; }).join('\n').trim();
+  var clean = text.replace(/```json|```/g,'').trim();
+  var start = clean.indexOf('['), end = clean.lastIndexOf(']');
+  if (start >= 0 && end >= 0) clean = clean.slice(start, end + 1);
+  return JSON.parse(clean);
+}
+function boqTargetProfitInput(v) {
+  if (!_boqAI) return;
+  _boqAI.targetProfit = v;
+}
+function runBOQAI() {
+  if (!_boqAI) return;
+  var target = boqParseMoney(_boqAI.targetProfit);
+  if (!target) { showToast('กรอกกำไรที่ต้องการก่อน', 'error'); return; }
+  var raw = _boqAI.items.reduce(function(s,r){ var m = BOQ_AI_MARGINS[r.category] || BOQ_AI_MARGINS.Other; return s + (Number(r.supplierTotal)||0) * (m.pct/100); }, 0);
+  var scale = raw > 0 ? target / raw : 1;
+  var added = 0;
+  _boqAI.items = _boqAI.items.map(function(r,i){
+    var m = BOQ_AI_MARGINS[r.category] || BOQ_AI_MARGINS.Other;
+    var add = roundHU((Number(r.supplierTotal)||0) * (m.pct/100) * scale);
+    added += add;
+    return Object.assign({}, r, { add:add, final:roundHU((Number(r.supplierTotal)||0) + add) });
+  });
+  if (_boqAI.items.length) {
+    var diff = roundHU(target - added);
+    var last = _boqAI.items[_boqAI.items.length - 1];
+    last.add = roundHU((last.add || 0) + diff);
+    last.final = roundHU((last.supplierTotal || 0) + last.add);
+  }
+  _boqAI.aiDone = true;
+  renderBOQAiPanel();
+}
+function boqManualAddInput(index, input) {
+  if (!_boqAI || !_boqAI.items[index]) return;
+  var add = boqParseMoney(input.value);
+  var r = _boqAI.items[index];
+  r.add = roundHU(add);
+  r.final = roundHU((Number(r.supplierTotal)||0) + r.add);
+  var f = document.getElementById('boq-final-' + index); if (f) f.textContent = fmt(r.final);
+  refreshBOQTotalsOnly();
+}
+function refreshBOQTotalsOnly() {
+  if (!_boqAI) return;
+  var sup = _boqAI.items.reduce(function(s,r){ return s + (Number(r.supplierTotal)||0); }, 0);
+  var finalTotal = _boqAI.items.reduce(function(s,r){ return s + (Number(r.final)||Number(r.supplierTotal)||0); }, 0);
+  var profit = roundHU(finalTotal - sup);
+  var margin = sup > 0 ? boqPercent(profit / sup * 100) : 0;
+  var p = document.getElementById('boq-profit-total'); if(p) p.textContent = '+' + fmt(profit);
+  var ft = document.getElementById('boq-final-total'); if(ft) ft.textContent = fmt(finalTotal);
+  var mt = document.getElementById('boq-margin-total'); if(mt) mt.textContent = margin + '%';
+}
+function boqAddBlankRow() {
+  if (!_boqAI) return;
+  _boqAI.items.push({ id:_boqAI.items.length + 1, item:'New item', qty:1, unit:'lot', supplierUnit:0, supplierTotal:0, category:'Other', add:0, final:0 });
+  renderBOQAiPanel();
+}
+function getBOQCategoryLabel(cat) {
+  var map = {
+    Preliminaries: '1. งานเตรียมการ / Preliminaries',
+    EarthworkFoundation: '2. งานดินและฐานราก / Earthwork & Foundation',
+    Structural: '3. งานโครงสร้าง / Structural Works',
+    Architectural: '4. งานสถาปัตยกรรม / Architectural Works',
+    Electrical: '5. งานระบบไฟฟ้า / Electrical Works',
+    SanitaryPlumbing: '6. งานสุขาภิบาลและประปา / Sanitary & Plumbing',
+    HVAC: '7. งานปรับอากาศและระบายอากาศ / HVAC',
+    FireProtection: '8. งานระบบป้องกันอัคคีภัย / Fire Protection',
+    ExternalLandscape: '9. งานภายนอกอาคาร / External Works & Landscape',
+    FurnitureEquipment: '10. งานครุภัณฑ์และเฟอร์นิเจอร์ / Furniture & Equipment',
+    Other: 'อื่น ๆ / Other'
+  };
+  return map[cat] || (cat || 'Other');
+}
+function getBOQCategoryShortLabel(cat) {
+  var map = {
+    Preliminaries: 'เตรียมการ',
+    EarthworkFoundation: 'ดิน/ฐานราก',
+    Structural: 'โครงสร้าง',
+    Architectural: 'สถาปัตย์',
+    Electrical: 'ไฟฟ้า',
+    SanitaryPlumbing: 'สุขาภิบาล',
+    HVAC: 'ปรับอากาศ',
+    FireProtection: 'ดับเพลิง',
+    ExternalLandscape: 'ภายนอก/ภูมิทัศน์',
+    FurnitureEquipment: 'เฟอร์นิเจอร์/ครุภัณฑ์',
+    Other: 'อื่น ๆ'
+  };
+  return map[cat] || (cat || 'Other');
+}
+function getBOQCategoryOrder(items) {
+  var preferred = ['Preliminaries','EarthworkFoundation','Structural','Architectural','Electrical','SanitaryPlumbing','HVAC','FireProtection','ExternalLandscape','FurnitureEquipment','Other'];
+  var found = {};
+  (items || []).forEach(function(r){ var cat = guessBOQCategory(r.category || r.item || r.description || 'Other'); found[cat || 'Other'] = true; });
+  var ordered = preferred.filter(function(c){ return found[c]; });
+  Object.keys(found).sort().forEach(function(c){ if (ordered.indexOf(c) < 0) ordered.push(c); });
+  return ordered;
+}
+function buildBOQSummaryItems(items) {
+  var grouped = {};
+  (items || []).forEach(function(r){
+    var cat = r.category || 'Other';
+    grouped[cat] = grouped[cat] || { total:0, count:0 };
+    grouped[cat].total += Number(r.final || r.supplierTotal || 0);
+    grouped[cat].count += 1;
+  });
+  var cats = getBOQCategoryOrder(items).filter(function(c){ return grouped[c] && grouped[c].total > 0; });
+  if (!cats.length) return [];
+  return cats.map(function(cat){
+    return {
+      desc: getBOQCategoryLabel(cat) + ' - as per attached BOQ (' + grouped[cat].count + ' items)',
+      qty: 1,
+      price: roundHU(grouped[cat].total)
+    };
+  });
+}
+async function createQuotationForBOQ(projId) {
+  var project = allData.find(function(r){ return r.record_type === 'project' && r.project_id === projId; });
+  var docNum = nextDocNum('QT');
+  var q = {
+    record_type:'quotation', project_id:projId, doc_number:docNum,
+    items_json:'[]', subtotal:0, vat_amount:0, client_wht_amount:0, grand_total:0,
+    vat_mode:'excluded', created_at:new Date().toISOString(),
+    doc_subject: project ? (project.project_name || '') : '',
+    attention_name:'', ref_no: projId || '', valid_until:'',
+    payment_terms_text:'Payment due within 7 days',
+    remark_text:'See attached BOQ for details.'
+  };
+  var result = await window.dataSdk.create(q);
+  if (!result || !result.isOk) throw new Error('สร้างใบเสนอราคาไม่สำเร็จ');
+  return q;
+}
+async function saveBOQToProject() {
+  if (!_boqAI || !_boqAI.items.length) return;
+  var projId = _boqAI.projectId;
+  var q = _boqAI.quotationId ? allData.find(function(r){ return r.__backendId === _boqAI.quotationId; }) : getQuotation(projId);
+  try {
+    if (!q) q = await createQuotationForBOQ(projId);
+    var supplierTotal = roundHU(_boqAI.items.reduce(function(s,r){ return s + (Number(r.supplierTotal)||0); }, 0));
+    var finalTotal = roundHU(_boqAI.items.reduce(function(s,r){ return s + (Number(r.final)||Number(r.supplierTotal)||0); }, 0));
+    var profit = roundHU(finalTotal - supplierTotal);
+    var margin = supplierTotal > 0 ? boqPercent(profit / supplierTotal * 100) : 0;
+    var boqRecord = { record_type:'boq', boq_id:genId(), project_id:projId, quotation_id:q.__backendId, supplier_file_name:_boqAI.fileName || 'BOQ', supplier_total:supplierTotal, target_profit:boqParseMoney(_boqAI.targetProfit), final_total:finalTotal, profit_amount:profit, profit_percent:margin, items_json:JSON.stringify(_boqAI.items), created_at:new Date().toISOString() };
+    var res = await window.dataSdk.create(boqRecord);
+    if (!res || !res.isOk) throw new Error('บันทึก BOQ ไม่สำเร็จ');
+    var summaryItems = buildBOQSummaryItems(_boqAI.items);
+    var project = allData.find(function(r){ return r.record_type === 'project' && r.project_id === projId; });
+    q.doc_subject = q.doc_subject || (project ? (project.project_name || '') : '');
+    q.ref_no = q.ref_no || projId;
+    q.remark_text = q.remark_text || 'See attached BOQ for details.';
+    await recalcQuotation(q, summaryItems);
+    await addLog(projId, 'BOQ AI Extract', 'บันทึก BOQ และอัปเดตใบเสนอราคา ' + (q.doc_number || ''));
+    showToast('บันทึก BOQ และอัปเดตใบเสนอราคาแล้ว');
+    closeBOQAiPanel();
+    navigate('project-detail', projId);
+  } catch(err) {
+    showToast((err && err.message) || 'บันทึกไม่สำเร็จ', 'error');
+  }
+}
+function buildBOQPrintHtml(boq, project) {
+  var cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
+  var items = safeParseJSON(boq.items_json);
+  var q = null;
+  if (boq.quotation_id) q = allData.find(function(r){ return r.__backendId === boq.quotation_id; });
+  if (!q && project) q = getQuotation(project.project_id);
+  var client = project ? getProfiles('client').find(function(c){ return c.name === project.client_name; }) : null;
+
+  function fmtDocDate(v) {
+    if (!v) return '-';
+    var d = new Date(v);
+    if (isNaN(d.getTime())) return '-';
+    return String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0') + '/' + String(d.getFullYear()).slice(-2);
+  }
+  function htmlText(v) { return esc(v || '').replace(/\n/g, '<br>'); }
+
+  var companyName = cfg.company_name || defaultConfig.company_name || 'Dopious Limited Partnership';
+  var companyAddress = cfg.company_address || defaultConfig.company_address || '';
+  var companyTax = cfg.company_tax_id || defaultConfig.company_tax_id || '';
+  var companyEmail = cfg.company_email || defaultConfig.company_email || '';
+  var companyWeb = cfg.company_website || defaultConfig.company_website || '';
+  var companyTel = cfg.company_phone || defaultConfig.company_phone || '';
+  var companyLogo = getAssetValue('company_logo_data');
+  var companySignature = getAssetValue('company_signature_data');
+  var companyStamp = getAssetValue('company_stamp_data');
+  var preparedByName = cfg.company_prepare_name || 'Sujinda Tubtim';
+  var preparedByTitle = cfg.company_prepare_title || 'Managing Director';
+
+  var projectName = project ? (project.project_name || '-') : '-';
+  var clientName = project ? (project.client_name || '-') : '-';
+  var clientAddress = client && client.address ? client.address : '';
+  var clientTax = client && client.tax_id ? client.tax_id : '-';
+  var docDateText = fmtDocDate(boq.created_at || new Date().toISOString());
+  var referenceNo = (q && q.doc_number) ? q.doc_number : (project ? project.project_id : '-');
+  var quotationSubject = (q && q.doc_subject) ? q.doc_subject : projectName;
+
+  var categoryTotals = {};
+  (items || []).forEach(function(r){
+    var cat = r.category || 'Other';
+    categoryTotals[cat] = categoryTotals[cat] || { total:0, count:0 };
+    categoryTotals[cat].total += Number(r.final || r.supplierTotal || 0);
+    categoryTotals[cat].count += 1;
+  });
+  var cats = getBOQCategoryOrder(items);
+  var rowNo = 0;
+  var bodyRows = cats.map(function(cat){
+    var catItems = items.filter(function(r){ return (r.category || 'Other') === cat; });
+    if (!catItems.length) return '';
+    var subtotal = catItems.reduce(function(s,r){ return s + (Number(r.final || r.supplierTotal || 0)); }, 0);
+    var rows = '<tr class="cat-row"><td colspan="6">' + esc(getBOQCategoryLabel(cat)) + '</td></tr>';
+    rows += catItems.map(function(r){
+      rowNo += 1;
+      var qty = Number(r.qty || 0) || 0;
+      var finalTotal = roundHU(Number(r.final || r.supplierTotal || 0));
+      var unitFinal = qty ? roundHU(finalTotal / qty) : finalTotal;
+      return '<tr>' +
+        '<td class="m-no">' + rowNo + '</td>' +
+        '<td class="m-desc"><div class="item-title">' + esc(r.item || '-') + '</div></td>' +
+        '<td class="m-center">' + (qty || '') + '</td>' +
+        '<td class="m-center">' + esc(r.unit || '-') + '</td>' +
+        '<td class="m-money">' + fmt(unitFinal) + '</td>' +
+        '<td class="m-money strong">' + fmt(finalTotal) + '</td>' +
+        '</tr>';
+    }).join('');
+    rows += '<tr class="cat-total"><td></td><td colspan="4">Subtotal - ' + esc(getBOQCategoryLabel(cat)) + '</td><td class="m-money strong">' + fmt(subtotal) + '</td></tr>';
+    return rows;
+  }).join('');
+
+  var summaryRows = cats.filter(function(cat){ return categoryTotals[cat]; }).map(function(cat){
+    return '<tr><td>' + esc(getBOQCategoryLabel(cat)) + '</td><td class="right">' + (categoryTotals[cat].count || 0) + '</td><td class="right strong">' + fmt(categoryTotals[cat].total || 0) + '</td></tr>';
+  }).join('');
+
+  return '<style>' +
+    '.boqdoc{width:210mm;min-height:297mm;background:#fff;color:#161616;margin:0 auto;padding:14mm 14mm 12mm;box-sizing:border-box;font-family:Arial,Helvetica,sans-serif;font-size:9.6px;line-height:1.45;box-shadow:0 0 0 1px #e5e7eb;}' +
+    '.boqdoc *{box-sizing:border-box;}.min-head{display:grid;grid-template-columns:38mm 1fr;gap:10mm;align-items:start;padding-bottom:6mm;border-bottom:1px solid #9ca3af;}.min-logo{min-height:20mm;display:flex;align-items:flex-start;justify-content:flex-start;}.min-logo img{max-width:36mm;max-height:19mm;object-fit:contain;}.min-brand{font-size:25px;font-weight:800;letter-spacing:-1px;position:relative;padding-left:8mm;margin-top:2mm;}.min-brand:before{content:"";position:absolute;left:0;top:1.5mm;width:6mm;height:6mm;background:#e75a3f;box-shadow:3.8mm 0 0 #d94a31,0 3.8mm 0 #f07854,3.8mm 3.8mm 0 #c4c4c4;}.min-brand span{color:#ef5f45;}.min-company{font-size:8.8px;line-height:1.5;color:#333;}.min-company b{font-size:10.4px;color:#111;}.min-title{display:grid;grid-template-columns:1fr 55mm;gap:8mm;align-items:start;margin:7mm 0 5mm;}.min-title h1{font-size:18px;line-height:1.1;margin:0;font-weight:800;letter-spacing:.1px;}.min-title .th{font-size:10px;color:#555;margin-top:1mm;}.doc-meta{font-size:8.9px;border-left:1px solid #c7cdd4;padding-left:4mm;display:grid;gap:1mm;}.doc-meta .row{display:flex;justify-content:space-between;gap:5mm;border-bottom:1px solid #e5e7eb;padding-bottom:.7mm;}.label{color:#666;text-transform:uppercase;font-size:8px;letter-spacing:.2px;}.info-grid{display:grid;grid-template-columns:minmax(48mm,1fr) 62mm;gap:10mm;margin-bottom:6mm;align-items:start;}.info-title{font-size:8px;color:#666;text-transform:uppercase;font-weight:800;letter-spacing:.3px;margin-bottom:1.5mm;}.info-name{font-size:10.6px;font-weight:800;margin-bottom:1mm;}.info-text{font-size:9px;color:#333;white-space:pre-line;}.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:4mm 9mm;font-size:8.8px;}.detail-item{padding-bottom:1.2mm;}.detail-value{font-weight:700;margin-top:.5mm;}.items-min{width:100%;border-collapse:collapse;table-layout:fixed;margin-top:2mm;border:1px solid #8b8b8b;}.items-min th{font-size:8.4px;color:#444;text-transform:uppercase;letter-spacing:.25px;text-align:left;border:1px solid #8b8b8b;padding:1.5mm 1.5mm;background:#fafafa;}.items-min td{font-size:9.4px;border:1px solid #9a9a9a;padding:1.5mm 1.5mm;vertical-align:top;}.m-no{width:9mm;color:#555;text-align:center;}.m-desc{width:auto;}.m-center{text-align:center;width:16mm;}.m-money{text-align:right;width:30mm;}.strong{font-weight:800;}.item-title{font-weight:700;}.cat-row td{background:#f3f4f6!important;font-weight:800;text-transform:uppercase;letter-spacing:.15px;color:#222;border-top:1.4px solid #111!important;border-bottom:1px solid #777!important;}.cat-total td{background:#fbfbfb!important;font-weight:800;border-top:1px solid #777!important;}.summary-grid{display:grid;grid-template-columns:minmax(0,1fr) 48mm;gap:6mm;margin-top:6mm;align-items:start;}.summary-table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:8.8px;}.summary-table th,.summary-table td{border:1px solid #d6d6d6;padding:1.4mm;text-align:left;}.summary-table th{background:#fafafa;color:#555;text-transform:uppercase;font-size:7.8px;}.totals-min{width:100%;max-width:48mm;border-collapse:collapse;font-size:9.2px;table-layout:fixed;}.totals-min td{padding:1.7mm 0;border-bottom:1px solid #e5e7eb;}.totals-min td:last-child{text-align:right;font-weight:700;}.totals-min tr.total td{font-size:11px;font-weight:800;border-top:1px solid #9ca3af;border-bottom:1px solid #9ca3af;padding-top:2.3mm;padding-bottom:2.3mm;}.note-box{font-size:8.4px;color:#555;line-height:1.48;margin-top:4mm;}.sign-grid-min{display:grid;grid-template-columns:1fr 1fr;gap:18mm;margin-top:10mm;}.sign-min{position:relative;text-align:center;border-top:none;padding-top:1.8mm;min-height:22mm;}.sign-label{font-size:8px;color:#666;text-transform:uppercase;}.sign-name{font-size:10px;font-weight:700;margin-top:1.5mm;}.sign-role{font-size:8.5px;color:#555;}.signature-img{position:absolute;left:50%;top:-9.5mm;transform:translateX(-50%);max-width:38mm;max-height:14mm;object-fit:contain;}.stamp-img{position:absolute;left:50%;top:-13mm;transform:translateX(-50%);max-width:38mm;max-height:20mm;object-fit:contain;opacity:.85;}.right{text-align:right;}.items-min{page-break-after:auto;break-after:auto;}.items-min thead{display:table-header-group;}.items-min tbody{display:table-row-group;}.items-min tr{page-break-inside:avoid;break-inside:avoid;}.cat-row{page-break-after:avoid!important;break-after:avoid!important;}.cat-row+tr{page-break-before:avoid!important;break-before:avoid!important;}.cat-total{page-break-before:avoid!important;break-before:avoid!important;}.summary-grid{page-break-inside:avoid;break-inside:avoid;page-break-before:auto;break-before:auto;}.summary-table tr,.totals-min tr,.sign-grid-min,.sign-min,.note-box{page-break-inside:avoid;break-inside:avoid;}.sign-grid-min{page-break-before:avoid;break-before:avoid;}@media print{body{background:#fff}.no-print{display:none!important}.boqdoc{box-shadow:none;margin:0;width:210mm;min-height:auto;overflow:visible}.min-head,.min-title,.info-grid{page-break-inside:avoid;break-inside:avoid}.items-min th{background:#fafafa!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.cat-row td,.cat-total td{ -webkit-print-color-adjust:exact;print-color-adjust:exact;}@page{size:A4;margin:0}}' +
+    '</style>' +
+    '<div class="boqdoc">' +
+      '<div class="min-head"><div class="min-logo">' + (companyLogo ? '<img src="' + companyLogo + '" alt="Company logo">' : '') + '</div><div class="min-company"><b>' + esc(companyName) + '</b><br>' + esc(companyAddress) + '<br>Email : ' + esc(companyEmail) + ' &nbsp; Website : ' + esc(companyWeb) + ' &nbsp; Tel : ' + esc(companyTel) + ' &nbsp; Tax ID : ' + esc(companyTax) + '</div></div>' +
+      '<div class="min-title"><div><h1>Bill of Quantities</h1><div class="th">รายละเอียดปริมาณงานและราคาแนบใบเสนอราคา</div></div><div class="doc-meta"><div class="row"><span class="label">Reference</span><b>' + esc(referenceNo) + '</b></div><div class="row"><span class="label">Date</span><b>' + docDateText + '</b></div><div class="row"><span class="label">Source File</span><b>' + esc(boq.supplier_file_name || 'BOQ') + '</b></div></div></div>' +
+      '<div class="info-grid"><div><div class="info-title">Bill To / ลูกค้า</div><div class="info-name">' + esc(clientName) + '</div><div class="info-text">' + htmlText(clientAddress || '-') + '<br>Tax ID: ' + esc(clientTax) + '</div></div><div><div class="info-title">Document Details</div><div class="detail-grid"><div class="detail-item"><span class="label">Project</span><div class="detail-value">' + esc(quotationSubject) + '</div></div><div class="detail-item"><span class="label">BOQ Type</span><div class="detail-value">Final Selling Price Only</div></div><div class="detail-item"><span class="label">Categories</span><div class="detail-value">' + cats.length + '</div></div><div class="detail-item"><span class="label">Items</span><div class="detail-value">' + items.length + '</div></div></div></div></div>' +
+      '<table class="items-min"><colgroup><col style="width:9mm"><col><col style="width:16mm"><col style="width:16mm"><col style="width:30mm"><col style="width:32mm"></colgroup><thead><tr><th>No.</th><th>Description / รายละเอียด</th><th style="text-align:center">Qty</th><th style="text-align:center">Unit</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Amount</th></tr></thead><tbody>' + bodyRows + '</tbody></table>' +
+      '<div class="summary-grid"><div><div class="info-title">Category Summary / สรุปตามหมวดหมู่</div><table class="summary-table"><thead><tr><th>Category</th><th class="right" style="width:22mm">Items</th><th class="right" style="width:34mm">Amount</th></tr></thead><tbody>' + summaryRows + '</tbody></table><div class="note-box">หมายเหตุ: เอกสาร BOQ นี้แสดงเฉพาะราคาขายหลังบวกกำไรแล้ว ไม่แสดงราคาทุน Supplier หรือ Profit แยกรายการ เพื่อใช้แนบใบเสนอราคาให้ลูกค้า</div></div><div><table class="totals-min"><tr><td>Subtotal</td><td>' + fmt(boq.final_total || 0) + '</td></tr><tr class="total"><td>Total</td><td>' + fmt(boq.final_total || 0) + '</td></tr></table></div></div>' +
+      '<div class="sign-grid-min"><div class="sign-min"><div class="sign-label">Client Acknowledgement</div><div class="sign-name">____________________________</div><div class="sign-role">Signature / Date</div></div><div class="sign-min">' + (companyStamp ? '<img class="stamp-img" src="' + companyStamp + '" alt="Company stamp">' : '') + (companySignature ? '<img class="signature-img" src="' + companySignature + '" alt="Signature">' : '') + '<div class="sign-label">Prepared By</div><div class="sign-name">' + esc(preparedByName) + '</div><div class="sign-role">' + esc(preparedByTitle) + '<br>' + docDateText + '</div></div></div>' +
+    '</div>';
+}
+function previewCurrentBOQ() {
+  if (!_boqAI) return;
+  var project = allData.find(function(r){ return r.record_type === 'project' && r.project_id === _boqAI.projectId; });
+  var supplierTotal = roundHU(_boqAI.items.reduce(function(s,r){ return s + (Number(r.supplierTotal)||0); }, 0));
+  var finalTotal = roundHU(_boqAI.items.reduce(function(s,r){ return s + (Number(r.final)||Number(r.supplierTotal)||0); }, 0));
+  var temp = { supplier_file_name:_boqAI.fileName || 'BOQ Preview', supplier_total:supplierTotal, profit_amount:roundHU(finalTotal - supplierTotal), final_total:finalTotal, profit_percent:supplierTotal ? boqPercent((finalTotal - supplierTotal)/supplierTotal*100) : 0, items_json:JSON.stringify(_boqAI.items), created_at:new Date().toISOString() };
+  openDSRPrintOverlay('BOQ Preview', 'BOQ_preview', buildBOQPrintHtml(temp, project), false);
+}
+function previewLatestBOQ(projId, quotationId) {
+  var boq = latestProjectBOQ(projId, quotationId);
+  if (!boq) { showToast('ยังไม่มี BOQ สำหรับใบเสนอราคานี้', 'error'); return false; }
+  var project = allData.find(function(r){ return r.record_type === 'project' && r.project_id === projId; });
+  return openDSRPrintOverlay('BOQ Attachment', 'BOQ_' + (project ? project.project_name || projId : projId), buildBOQPrintHtml(boq, project), false);
+}
+
 // ===== PAGE: PROJECT DETAIL =====
 function renderProjectDetail(el, projId) {
   const project = allData.find(r => r.record_type === 'project' && r.project_id === projId);
@@ -990,6 +1621,7 @@ function renderProjectDetail(el, projId) {
     '<div id="tab-qt">' +
     (quotation ?
       renderQuotationEditor(quotation, items, isFullyReceipted, projId) +
+      renderProjectBOQSummary(projId, quotation.__backendId) +
       '<div class="mt-6 border-t border-slate-800 pt-5">' +
         '<div class="flex justify-between items-center mb-4">' +
           '<div><h3 class="text-base font-semibold text-white">งวดงาน</h3><div class="text-xs text-slate-500 mt-1">รวมไว้ในหน้าใบเสนอราคาเพื่อดูภาพรวมได้ง่ายขึ้น</div></div>' +
@@ -1002,7 +1634,7 @@ function renderProjectDetail(el, projId) {
         (installments.length === 0 ? '<p class="text-slate-500 text-sm text-center py-4">ยังไม่มีงวดงาน</p>' : installments.map(function(inst, idx) { return renderInstallmentCard(inst, idx, quotation); }).join('')) +
         '</div>' +
       '</div>' :
-      '<div class="text-center py-8"><p class="text-slate-500 mb-4">ยังไม่มีใบเสนอราคา</p><button class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm" onclick="createQuotation(\'' + projId + '\')">สร้างใบเสนอราคา</button></div>') +
+      renderNoQuotationOptions(projId)) +
     '</div>' +
 
     '<div id="tab-split" style="display:none">' +
@@ -1209,6 +1841,7 @@ function renderQuotationEditor(q, items, locked, projId) {
         '<span class="mono text-sm text-orange-400">'+(q.doc_number||'-')+'</span>'+
         (locked?'<span class="text-xs text-red-400">🔒 ล็อค</span>':'')+
         '<button type="button" class="px-2.5 py-1 bg-orange-600/20 border border-orange-500/40 text-orange-300 rounded-lg text-xs hover:bg-orange-600/30 flex items-center gap-1" onclick="previewDoc(\''+projId+'\',\'QT\',\''+(q.doc_number||'')+'\')"><i data-lucide="eye" class="w-3 h-3"></i> ดูใบเสนอราคา</button>'+
+        '<button type="button" class="px-2.5 py-1 bg-slate-800 border border-slate-700 text-slate-200 rounded-lg text-xs hover:bg-slate-700 flex items-center gap-1" onclick="openBOQAiPanel(\''+projId+'\',\''+qId+'\')"><i data-lucide="sparkles" class="w-3 h-3"></i> BOQ AI Extract</button>'+
       '</div>'+
       '<div class="flex items-center gap-4 flex-wrap">'+
         '<div class="flex items-center gap-2"><label class="text-xs text-slate-400">VAT:</label>'+
@@ -3207,6 +3840,1494 @@ if (window.lucide) lucide.createIcons();
     sp.style.height = (b.style.display==='none'?0:b.offsetHeight)+'px';
   }).observe(b,{attributes:true,attributeFilter:['style']});
 })();
+/* ===== BOQ EXTENSION PATCH: better page split, supplier preview, manual edit + AI ===== */
+(function(){
+  function getCfg(){ return window.elementSdk ? window.elementSdk.config : defaultConfig; }
+  function boqGetProject(projId){ return allData.find(function(r){ return r.record_type === 'project' && r.project_id === projId; }); }
+  function boqCalcStats(items){
+    items = items || [];
+    var supplier = 0, final = 0;
+    items.forEach(function(r){ supplier += Number(r.supplierTotal||0); final += Number(r.final||r.supplierTotal||0); });
+    supplier = roundHU(supplier); final = roundHU(final);
+    var profit = roundHU(final - supplier);
+    var margin = supplier > 0 ? boqPercent(profit / supplier * 100) : 0;
+    return {supplier:supplier, final:final, profit:profit, margin:margin};
+  }
+  function boqRefreshSummaryStats(){
+    if (!_boqAI) return;
+    var st = boqCalcStats(_boqAI.items || []);
+    var setText = function(id, txt){ var el = document.getElementById(id); if (el) el.textContent = txt; };
+    setText('boq-profit-total', '+' + fmt(st.profit));
+    setText('boq-final-total', fmt(st.final));
+    setText('boq-margin-total', st.margin + '%');
+    setText('boq-supplier-total', fmt(st.supplier));
+  }
+  function boqRecalcAllRows(){
+    if (!_boqAI || !_boqAI.items) return;
+    (_boqAI.items || []).forEach(function(r,i){
+      var supplier = roundHU(Number(r.supplierTotal||0));
+      var add = roundHU(Number(r.add||0));
+      r.final = roundHU(supplier + add);
+      var td = document.getElementById('boq-final-' + i); if (td) td.textContent = fmt(r.final);
+      var ad = document.getElementById('boq-add-' + i); if (ad && ad.value !== String(fmt(add))) ad.value = fmt(add);
+    });
+    boqRefreshSummaryStats();
+  }
+  window.boqRecalcAllRows = boqRecalcAllRows;
+
+  var _boqEdit = null;
+  function boqEnsureEditModal(){
+    var el = document.getElementById('boq-item-editor-modal');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'boq-item-editor-modal';
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+  function boqCloseItemEditor(){ var el = document.getElementById('boq-item-editor-modal'); if (el) el.innerHTML = ''; _boqEdit = null; }
+  function boqOpenItemEditor(index){
+    if (!_boqAI || !_boqAI.items || !_boqAI.items[index]) return;
+    _boqEdit = { index:index, draft: JSON.parse(JSON.stringify(_boqAI.items[index])), messages: [] };
+    boqRenderItemEditor();
+  }
+  function boqUpdateEditDraft(field, value){
+    if (!_boqEdit) return;
+    if (['qty','supplierUnit','supplierTotal','add','final'].indexOf(field) >= 0) value = parseFloat(value || 0) || 0;
+    _boqEdit.draft[field] = value;
+    var d = _boqEdit.draft;
+    if (field === 'qty' || field === 'supplierUnit') {
+      d.supplierTotal = roundHU((parseFloat(d.qty)||0) * (parseFloat(d.supplierUnit)||0));
+      if (d.add || d.add === 0) d.final = roundHU((parseFloat(d.supplierTotal)||0) + (parseFloat(d.add)||0));
+    }
+    if (field === 'supplierTotal' || field === 'add') d.final = roundHU((parseFloat(d.supplierTotal)||0) + (parseFloat(d.add)||0));
+    if (field === 'final') d.add = roundHU((parseFloat(d.final)||0) - (parseFloat(d.supplierTotal)||0));
+    boqRenderItemEditor();
+  }
+  async function boqSendItemAI(){
+    if (!_boqEdit || !_boqAI) return;
+    var promptEl = document.getElementById('boq-edit-ai-input');
+    var userMsg = (promptEl && promptEl.value || '').trim();
+    if (!userMsg) return;
+    var key = sanitizeBOQApiKey(_boqAI.apiKey || '');
+    var err = validateBOQApiKeyValue(key);
+    if (err) { showToast(err, 'error'); return; }
+    _boqEdit.messages.push({ role:'user', content:userMsg });
+    boqRenderItemEditor(true);
+    try {
+      var d = _boqEdit.draft;
+      var sys = 'You are a BOQ pricing assistant for a Thai design/fit-out business. Help explain markup and whether pricing seems reasonable for Thai market conditions. Be practical, concise, and transparent when estimating. If the market check is uncertain, say it is an estimate, not a live quote.';
+      var itemContext = {
+        project: _boqAI.projectName,
+        client: _boqAI.clientName,
+        item: d.item,
+        category: d.category,
+        qty: d.qty,
+        unit: d.unit,
+        supplier_unit: d.supplierUnit,
+        supplier_total: d.supplierTotal,
+        added_profit: d.add,
+        final_selling_price: d.final,
+        target_project_profit: _boqAI.targetProfit || '',
+        question: userMsg
+      };
+      var response = await fetch('https://api.anthropic.com/v1/messages', {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'x-api-key':key, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
+        body: JSON.stringify({
+          model:'claude-sonnet-4-6',
+          max_tokens:500,
+          system: sys,
+          messages:[{ role:'user', content:'BOQ item context: ' + JSON.stringify(itemContext) + '\n\nPlease answer in Thai. Explain: 1) why adding price may be justified or not, 2) whether the current final price seems reasonable for the Thai market, 3) suggest a fair range if useful, 4) if user asks to revise, recommend a revised add amount and final price.' }]
+        })
+      });
+      var data = await response.json().catch(function(){ return {}; });
+      if (!response.ok || data.error) throw new Error((data.error && data.error.message) || ('HTTP ' + response.status));
+      var reply = ((data.content||[]).map(function(c){ return c.text || ''; }).join('\n')).trim() || 'ไม่พบคำตอบจาก AI';
+      _boqEdit.messages.push({ role:'assistant', content: reply });
+    } catch(err2) {
+      _boqEdit.messages.push({ role:'assistant', content:'AI ตอบกลับไม่สำเร็จ: ' + ((err2 && err2.message) ? err2.message : 'unknown error') });
+    }
+    boqRenderItemEditor();
+  }
+  function boqApplyAISuggestedValues(){
+    if (!_boqEdit || !_boqEdit.messages || !_boqEdit.messages.length) return;
+    var txt = _boqEdit.messages[_boqEdit.messages.length - 1].content || '';
+    var num = txt.match(/(?:final|ราคาขาย|ราคาสุดท้าย|final\s*price)[^\d]{0,20}([\d,]+(?:\.\d+)?)/i);
+    if (num) {
+      var finalVal = parseFloat(String(num[1]).replace(/,/g,'')) || 0;
+      boqUpdateEditDraft('final', finalVal);
+      showToast('ใส่ราคาสุดท้ายจากคำแนะนำ AI ให้แล้ว');
+    } else showToast('ยังไม่พบตัวเลขราคาที่ชัดเจนจากคำตอบ AI', 'error');
+  }
+  function boqSaveItemEditor(){
+    if (!_boqEdit || !_boqAI || !_boqAI.items[_boqEdit.index]) return;
+    _boqAI.items[_boqEdit.index] = JSON.parse(JSON.stringify(_boqEdit.draft));
+    boqCloseItemEditor();
+    renderBOQAiPanel();
+  }
+  function boqRenderItemEditor(isBusy){
+    if (!_boqEdit) return;
+    var d = _boqEdit.draft;
+    var el = boqEnsureEditModal();
+    var msgs = (_boqEdit.messages||[]).map(function(m){
+      var cls = m.role === 'user' ? 'bg-slate-800 text-slate-200 ml-10' : 'bg-orange-950/40 border border-orange-500/20 text-orange-100 mr-10';
+      var title = m.role === 'user' ? 'คุณ' : 'AI';
+      return '<div class="rounded-xl p-3 text-xs leading-6 ' + cls + '"><div class="font-semibold mb-1">' + title + '</div><div style="white-space:pre-line">' + htmlText(m.content||'') + '</div></div>';
+    }).join('');
+    el.innerHTML = '<div class="fixed inset-0 z-[99999] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">' +
+      '<div class="w-full max-w-6xl bg-[#0a0a0a] border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">' +
+      '<div class="px-5 py-3 border-b border-slate-800 flex items-center justify-between"><div><div class="text-white font-semibold">Edit BOQ Item</div><div class="text-xs text-slate-500">แก้รายการแบบ manual และคุยกับ AI ได้ในกรอบเดียว</div></div><button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs" onclick="boqCloseItemEditor()">ปิด</button></div>' +
+      '<div class="grid lg:grid-cols-[1.05fr_.95fr] gap-0">' +
+        '<div class="p-5 border-r border-slate-800 space-y-4">' +
+          '<div class="grid md:grid-cols-2 gap-3">' +
+            '<div class="md:col-span-2"><label class="text-[11px] text-slate-400">Item / Description</label><textarea rows="3" class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 outline-none" oninput="boqUpdateEditDraft(\'item\', this.value)">' + esc(d.item||'') + '</textarea></div>' +
+            '<div><label class="text-[11px] text-slate-400">Category</label><select class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white" onchange="boqUpdateEditDraft(\'category\', this.value)">' + Object.keys(BOQ_AI_MARGINS).concat(['Other']).filter(function(v,i,a){ return a.indexOf(v)===i; }).map(function(cat){ return '<option value="'+esc(cat)+'"' + (d.category===cat?' selected':'') + '>'+esc(cat)+'</option>'; }).join('') + '</select></div>' +
+            '<div><label class="text-[11px] text-slate-400">Unit</label><input class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white" value="' + esc(d.unit||'') + '" oninput="boqUpdateEditDraft(\'unit\', this.value)"></div>' +
+            '<div><label class="text-[11px] text-slate-400">Qty</label><input type="number" step="0.01" class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white text-right mono" value="' + esc(d.qty||0) + '" oninput="boqUpdateEditDraft(\'qty\', this.value)"></div>' +
+            '<div><label class="text-[11px] text-slate-400">Supplier Unit Price</label><input type="number" step="0.01" class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white text-right mono" value="' + esc(d.supplierUnit||0) + '" oninput="boqUpdateEditDraft(\'supplierUnit\', this.value)"></div>' +
+            '<div><label class="text-[11px] text-slate-400">Supplier Total (ก่อนบวก)</label><input type="number" step="0.01" class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white text-right mono" value="' + esc(d.supplierTotal||0) + '" oninput="boqUpdateEditDraft(\'supplierTotal\', this.value)"></div>' +
+            '<div><label class="text-[11px] text-slate-400">Add / Profit</label><input type="number" step="0.01" class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-orange-300 text-right mono" value="' + esc(d.add||0) + '" oninput="boqUpdateEditDraft(\'add\', this.value)"></div>' +
+            '<div><label class="text-[11px] text-slate-400">Final Selling Price</label><input type="number" step="0.01" class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-emerald-300 text-right mono" value="' + esc(d.final||0) + '" oninput="boqUpdateEditDraft(\'final\', this.value)"></div>' +
+          '</div>' +
+          '<div class="rounded-xl bg-slate-950 border border-slate-800 p-4 text-xs text-slate-300"><div class="font-semibold text-white mb-2">Quick Summary</div><div class="grid grid-cols-2 gap-2"><div>ก่อนบวก: <span class="mono text-slate-100">' + fmt(d.supplierTotal||0) + '</span></div><div>กำไรที่บวก: <span class="mono text-orange-300">+' + fmt(d.add||0) + '</span></div><div>ราคาขาย: <span class="mono text-emerald-300">' + fmt(d.final||0) + '</span></div><div>Margin: <span class="mono text-purple-300">' + ((d.supplierTotal||0) ? boqPercent((Number(d.add||0)/(Number(d.supplierTotal)||1))*100) : 0) + '%</span></div></div></div>' +
+          '<div class="flex gap-2"><button class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-semibold" onclick="boqSaveItemEditor()">Save Item</button><button class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm" onclick="boqCloseItemEditor()">Cancel</button></div>' +
+        '</div>' +
+        '<div class="p-5 flex flex-col min-h-[70vh]">' +
+          '<div class="flex items-center justify-between gap-2 mb-3"><div><div class="text-white font-semibold">AI Pricing Assistant</div><div class="text-xs text-slate-500">ถามได้ว่าทำไมบวกราคา / สมเหตุผลไหม / ตลาดไทยประมาณเท่าไร</div></div><button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs" onclick="boqApplyAISuggestedValues()">ใช้ราคาที่ AI แนะนำ</button></div>' +
+          '<div class="flex-1 min-h-[320px] bg-slate-950 border border-slate-800 rounded-2xl p-3 space-y-3 overflow-auto">' + (msgs || '<div class="text-xs text-slate-500">ตัวอย่าง: “ช่วยอธิบายว่าทำไมบวก 12%”, “ราคา final นี้สมเหตุผลกับงานติดตั้งในไทยไหม”, “ควรบวกเพิ่มเท่าไรให้ปลอดภัยแต่ยังแข่งขันได้”</div>') + '</div>' +
+          '<div class="mt-3 flex gap-2"><textarea id="boq-edit-ai-input" rows="3" class="flex-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-sm text-white focus:border-orange-500 outline-none" placeholder="ถาม AI เรื่องการบวกราคา ความสมเหตุสมผล หรือให้ช่วยประเมินราคาตลาดไทย"></textarea><button class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-sm font-semibold self-end" onclick="boqSendItemAI()">' + (isBusy ? 'กำลังถาม...' : 'Ask AI') + '</button></div>' +
+        '</div>' +
+      '</div></div></div>';
+  }
+
+  window.boqOpenItemEditor = boqOpenItemEditor;
+  window.boqCloseItemEditor = boqCloseItemEditor;
+  window.boqUpdateEditDraft = boqUpdateEditDraft;
+  window.boqSaveItemEditor = boqSaveItemEditor;
+  window.boqSendItemAI = boqSendItemAI;
+  window.boqApplyAISuggestedValues = boqApplyAISuggestedValues;
+
+  var oldAddRow = window.boqAddBlankRow;
+  window.boqAddBlankRow = function(){
+    if (typeof oldAddRow === 'function') oldAddRow();
+    if (_boqAI && _boqAI.items && _boqAI.items.length) setTimeout(function(){ boqOpenItemEditor(_boqAI.items.length - 1); }, 50);
+  };
+
+  renderProjectBOQSummary = function(projId, quotationId) {
+    var b = latestProjectBOQ(projId, quotationId);
+    if (!b) {
+      return '<div class="mt-4 mb-5 bg-slate-950/50 border border-dashed border-slate-700 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">' +
+        '<div><div class="text-sm font-semibold text-white">BOQ Attachment</div><div class="text-xs text-slate-500 mt-1">ยังไม่มี BOQ แนบกับใบเสนอราคานี้</div></div>' +
+        '<button class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs flex items-center gap-1" onclick="openBOQAiPanel(\'' + projId + '\',\'' + (quotationId || '') + '\')"><i data-lucide="sparkles" class="w-3 h-3"></i> BOQ AI Extract</button>' +
+      '</div>';
+    }
+    return '<div class="mt-4 mb-5 bg-slate-950/60 border border-orange-500/30 rounded-xl p-4">' +
+      '<div class="flex flex-wrap items-start justify-between gap-3">' +
+        '<div><div class="text-sm font-semibold text-white flex items-center gap-2"><i data-lucide="paperclip" class="w-4 h-4 text-orange-400"></i> BOQ Attachment</div>' +
+        '<div class="text-xs text-slate-500 mt-1">' + esc(b.supplier_file_name || 'BOQ') + ' · ' + fmtDate(b.created_at) + '</div></div>' +
+        '<div class="flex gap-2 flex-wrap">' +
+          '<button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs" onclick="previewLatestSupplierBOQ(\'' + projId + '\',\'' + (quotationId || '') + '\')">Supplier BOQ</button>' +
+          '<button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs" onclick="previewLatestBOQ(\'' + projId + '\',\'' + (quotationId || '') + '\')">Client BOQ</button>' +
+          '<button class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs" onclick="openBOQAiPanel(\'' + projId + '\',\'' + (quotationId || '') + '\')">Edit BOQ AI Extract</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="grid grid-cols-2 md:grid-cols-4 gap-2 mt-4">' +
+        '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Supplier Cost</div><div class="mono text-sm text-slate-200">' + fmt(b.supplier_total||0) + '</div></div>' +
+        '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Profit</div><div class="mono text-sm text-orange-400">+' + fmt(b.profit_amount||0) + '</div></div>' +
+        '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Final</div><div class="mono text-sm text-emerald-400">' + fmt(b.final_total||0) + '</div></div>' +
+        '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Margin</div><div class="mono text-sm text-purple-400">' + (b.profit_percent || 0) + '%</div></div>' +
+      '</div>' +
+    '</div>';
+  };
+
+  renderBOQPricingStep = function(supplierTotal, finalTotal, profit, margin) {
+    var cats = {};
+    (_boqAI.items || []).forEach(function(r){ cats[r.category] = (cats[r.category] || 0) + 1; });
+    var rows = (_boqAI.items || []).map(function(r,i){
+      var catColor = BOQ_CAT_COLOR[r.category] || '#888';
+      return '<tr class="border-b border-slate-800">' +
+        '<td class="py-2 pr-2 text-slate-500 text-xs px-3">' + (i+1) + '</td>' +
+        '<td class="py-2 pr-2"><div class="text-xs text-white leading-5">' + esc(r.item || '-') + '</div><div class="text-[10px] text-slate-500">' + esc(r.qty || 0) + ' ' + esc(r.unit || '') + ' × ' + fmt(r.supplierUnit || 0) + '</div></td>' +
+        '<td class="py-2 pr-2"><span class="px-2 py-0.5 rounded-full text-[10px]" style="background:' + catColor + '22;color:' + catColor + '">' + esc(r.category || 'Other') + '</span></td>' +
+        '<td class="py-2 pr-2 text-right mono text-xs text-slate-300">' + fmt(r.supplierTotal || 0) + '</td>' +
+        '<td class="py-2 pr-2"><input id="boq-add-' + i + '" type="text" inputmode="decimal" value="' + fmt(r.add || 0) + '" class="w-24 px-2 py-1 bg-slate-900 border border-slate-700 rounded text-xs mono text-right text-orange-300 focus:border-orange-500 focus:outline-none" onfocus="this.select()" oninput="boqManualAddInput(' + i + ',this)"></td>' +
+        '<td class="py-2 pr-2 text-right mono text-xs font-semibold text-emerald-400" id="boq-final-' + i + '">' + fmt(r.final || r.supplierTotal || 0) + '</td>' +
+        '<td class="py-2 px-3 text-right"><button class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-[11px] text-slate-200" onclick="boqOpenItemEditor(' + i + ')">Edit</button></td>' +
+      '</tr>';
+    }).join('');
+
+    return '<div class="flex-1 overflow-auto p-4 md:p-6">' +
+      '<div class="grid lg:grid-cols-[330px_1fr] gap-5">' +
+        '<aside class="space-y-4">' +
+          '<div class="bg-slate-950 border border-slate-800 rounded-2xl p-5">' +
+            '<div class="text-xs text-slate-500 uppercase tracking-wider mb-1">Supplier Cost</div><div id="boq-supplier-total" class="text-3xl mono text-white font-semibold mb-1">' + fmt(supplierTotal) + '</div><div class="text-xs text-slate-600">' + (_boqAI.items || []).length + ' รายการ · ' + Object.keys(cats).length + ' หมวด</div>' +
+            '<div class="h-px bg-slate-800 my-4"></div>' +
+            '<label class="text-xs text-slate-400">Desired Profit / กำไรที่ต้องการ</label>' +
+            '<div class="flex items-center gap-2 mt-2"><input id="boq-target-profit" type="text" inputmode="decimal" value="' + esc(_boqAI.targetProfit || '') + '" placeholder="เช่น 80000" class="flex-1 px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white mono text-right focus:border-orange-500 focus:outline-none" oninput="boqTargetProfitInput(this.value)" onkeydown="if(event.key===\'Enter\') runBOQAI()"><span class="text-xs text-slate-500">THB</span></div>' +
+            '<button class="mt-3 w-full px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm font-semibold flex items-center justify-center gap-2" onclick="runBOQAI()"><i data-lucide="sparkles" class="w-4 h-4"></i> APPLY AI PRICING</button>' +
+          '</div>' +
+          '<div class="bg-slate-950 border border-slate-800 rounded-2xl p-5 space-y-3">' +
+            '<div class="flex justify-between text-sm"><span class="text-slate-500">Profit Added</span><span class="mono text-orange-400" id="boq-profit-total">+' + fmt(profit) + '</span></div>' +
+            '<div class="flex justify-between text-sm"><span class="text-slate-500">Final Selling Price</span><span class="mono text-emerald-400 font-semibold" id="boq-final-total">' + fmt(finalTotal) + '</span></div>' +
+            '<div class="flex justify-between text-sm"><span class="text-slate-500">Margin</span><span class="mono text-purple-400" id="boq-margin-total">' + margin + '%</span></div>' +
+            '<div class="h-px bg-slate-800"></div>' +
+            '<button class="w-full px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-semibold" onclick="saveBOQToProject()">Confirm + Sync Quotation</button>' +
+            '<button class="w-full px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm" onclick="previewCurrentSupplierBOQ()">Preview Supplier BOQ</button>' +
+            '<button class="w-full px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm" onclick="previewCurrentBOQ()">Preview Client BOQ</button>' +
+          '</div>' +
+          '<div class="bg-slate-950 border border-slate-800 rounded-2xl p-5">' +
+            '<div class="text-sm font-semibold text-white mb-2">BOQ Manual Edit + AI</div>' +
+            '<div class="text-xs text-slate-500 leading-6">กด Edit ที่แต่ละแถวเพื่อแก้ไข manual พร้อมถาม AI ได้ว่าเพิ่มราคาตรงนี้ทำไม สมเหตุผลหรือไม่ และประเมินตลาดไทยแบบคร่าว ๆ ได้ใน modal เดียว</div>' +
+          '</div>' +
+        '</aside>' +
+        '<main class="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden">' +
+          '<div class="p-4 border-b border-slate-800 flex items-center justify-between gap-2"><div><div class="text-sm font-semibold text-white">BOQ Pricing Table</div><div class="text-xs text-slate-500">มีทั้งราคาก่อนบวก + ราคาที่บวกแล้ว และแก้ manual ได้</div></div><button class="px-3 py-1.5 bg-slate-800 text-xs rounded-lg" onclick="boqAddBlankRow()">+ Add Row</button></div>' +
+          '<div class="overflow-auto"><table class="w-full text-sm"><thead><tr class="border-b border-slate-800 text-[10px] uppercase tracking-wider text-slate-500"><th class="text-left py-2 px-3 w-10">#</th><th class="text-left py-2">Item</th><th class="text-left py-2 w-28">Cat</th><th class="text-right py-2 w-32">Supplier</th><th class="text-right py-2 w-28">Add</th><th class="text-right py-2 w-32">Final</th><th class="text-right py-2 px-3 w-20"></th></tr></thead><tbody id="boq-items-body">' + rows + '</tbody></table></div>' +
+        '</main>' +
+      '</div></div>';
+  };
+
+  function boqDocCoreHeader(project, boq, pageNo, pageCount, mode){
+    var cfg = getCfg();
+    var companyName = cfg.company_name || defaultConfig.company_name || 'Dopious+';
+    var companyAddress = cfg.company_address || defaultConfig.company_address || '-';
+    var companyEmail = cfg.company_email || defaultConfig.company_email || '-';
+    var companyWeb = cfg.company_website || defaultConfig.company_website || '-';
+    var companyTel = cfg.company_phone || defaultConfig.company_phone || '-';
+    var companyTax = cfg.company_tax_id || defaultConfig.company_tax_id || '-';
+    var companyLogo = cfg.company_logo_data || '';
+    var referenceNo = boq.doc_number || boq.quotation_number || boq.reference_no || (project && project.project_id) || '-';
+    var docDateText = fmtDate(boq.created_at || new Date().toISOString());
+    var clientName = (project && project.client_name) || '-';
+    var clientAddress = (project && (project.client_address || project.client_company_address)) || '-';
+    var clientTax = (project && (project.client_tax_id || project.client_tax)) || '-';
+    var quotationSubject = (project && project.project_name) || boq.project_name || '-';
+    var title = mode === 'internal' ? 'Supplier BOQ / Internal Pricing' : 'Bill of Quantities';
+    var subtitle = mode === 'internal' ? 'เอกสารภายใน แสดงราคาทุน + ราคาที่บวก + ราคาขาย' : 'รายละเอียดปริมาณงานและราคาแนบใบเสนอราคา';
+    return '<div class="min-head"><div class="min-logo">' + (companyLogo ? '<img src="' + companyLogo + '" alt="Company logo">' : '') + '</div><div class="min-company"><b>' + esc(companyName) + '</b><br>' + esc(companyAddress) + '<br>Email : ' + esc(companyEmail) + ' &nbsp; Website : ' + esc(companyWeb) + ' &nbsp; Tel : ' + esc(companyTel) + ' &nbsp; Tax ID : ' + esc(companyTax) + '</div></div>' +
+      '<div class="min-title"><div><h1>' + title + '</h1><div class="th">' + subtitle + '</div></div><div class="doc-meta"><div class="row"><span class="label">Reference</span><b>' + esc(referenceNo) + '</b></div><div class="row"><span class="label">Date</span><b>' + docDateText + '</b></div><div class="row"><span class="label">Page</span><b>' + pageNo + ' / ' + pageCount + '</b></div><div class="row"><span class="label">Source File</span><b>' + esc(boq.supplier_file_name || 'BOQ') + '</b></div></div></div>' +
+      '<div class="info-grid"><div><div class="info-title">Bill To / ลูกค้า</div><div class="info-name">' + esc(clientName) + '</div><div class="info-text">' + htmlText(clientAddress || '-') + '<br>Tax ID: ' + esc(clientTax) + '</div></div><div><div class="info-title">Document Details</div><div class="detail-grid"><div class="detail-item"><span class="label">Project</span><div class="detail-value">' + esc(quotationSubject) + '</div></div><div class="detail-item"><span class="label">BOQ Type</span><div class="detail-value">' + (mode === 'internal' ? 'Internal Pricing View' : 'Client Final Price View') + '</div></div><div class="detail-item"><span class="label">Categories</span><div class="detail-value">' + (getBOQCategoryOrder(safeParseJSON(boq.items_json)).length) + '</div></div><div class="detail-item"><span class="label">Items</span><div class="detail-value">' + (safeParseJSON(boq.items_json).length) + '</div></div></div></div></div>';
+  }
+
+  function boqEstimateUnits(rowHtmlType, item){
+    if (rowHtmlType === 'summary') return 8;
+    if (rowHtmlType === 'sign') return 7;
+    if (rowHtmlType === 'cat') return 1.3;
+    if (rowHtmlType === 'subtotal') return 1.1;
+    var txt = String((item && item.item) || '');
+    if (txt.length > 140) return 2.3;
+    if (txt.length > 90) return 1.8;
+    if (txt.length > 55) return 1.45;
+    return 1.1;
+  }
+
+  function boqBuildPagedRows(items, mode){
+    var cats = getBOQCategoryOrder(items);
+    var pages = [];
+    function makePage(){ return { rows: [], units: 0, openCat: null }; }
+    function capFor(pageIdx){ return pageIdx === 0 ? 17.5 : 24; }
+    pages.push(makePage());
+    var page = pages[0];
+    var rowNo = 0;
+    cats.forEach(function(cat){
+      var catItems = items.filter(function(r){ return (r.category || 'Other') === cat; });
+      if (!catItems.length) return;
+      var subtotal = catItems.reduce(function(s,r){ return s + Number(mode === 'internal' ? (r.final || r.supplierTotal || 0) : (r.final || r.supplierTotal || 0)); }, 0);
+      var idx = 0;
+      function startCat(cont){
+        var unit = boqEstimateUnits('cat');
+        if (page.units + unit > capFor(pages.length - 1)) { pages.push(makePage()); page = pages[pages.length - 1]; }
+        page.rows.push('<tr class="cat-row"><td colspan="' + (mode === 'internal' ? 8 : 6) + '">' + esc(getBOQCategoryLabel(cat)) + (cont ? ' <span style="font-weight:500;color:#555">(continued)</span>' : '') + '</td></tr>');
+        page.units += unit; page.openCat = cat;
+      }
+      startCat(false);
+      while (idx < catItems.length) {
+        var r = catItems[idx];
+        var itemUnit = boqEstimateUnits('item', r);
+        if (page.units + itemUnit + (idx === catItems.length - 1 ? boqEstimateUnits('subtotal') : 0) > capFor(pages.length - 1)) {
+          pages.push(makePage()); page = pages[pages.length - 1];
+          startCat(true);
+        }
+        rowNo += 1;
+        var qty = Number(r.qty || 0) || 0;
+        var supplierTotal = roundHU(Number(r.supplierTotal || 0));
+        var add = roundHU(Number(r.add || 0));
+        var finalTotal = roundHU(Number(r.final || r.supplierTotal || 0));
+        var supplierUnit = qty ? roundHU(supplierTotal / qty) : supplierTotal;
+        var finalUnit = qty ? roundHU(finalTotal / qty) : finalTotal;
+        var row = mode === 'internal'
+          ? '<tr><td class="m-no">' + rowNo + '</td><td class="m-desc"><div class="item-title">' + esc(r.item || '-') + '</div></td><td class="m-center">' + (qty || '') + '</td><td class="m-center">' + esc(r.unit || '-') + '</td><td class="m-money">' + fmt(supplierUnit) + '</td><td class="m-money">+' + fmt(add) + '</td><td class="m-money">' + fmt(finalUnit) + '</td><td class="m-money strong">' + fmt(finalTotal) + '</td></tr>'
+          : '<tr><td class="m-no">' + rowNo + '</td><td class="m-desc"><div class="item-title">' + esc(r.item || '-') + '</div></td><td class="m-center">' + (qty || '') + '</td><td class="m-center">' + esc(r.unit || '-') + '</td><td class="m-money">' + fmt(finalUnit) + '</td><td class="m-money strong">' + fmt(finalTotal) + '</td></tr>';
+        page.rows.push(row); page.units += itemUnit;
+        idx += 1;
+      }
+      var subUnit = boqEstimateUnits('subtotal');
+      if (page.units + subUnit > capFor(pages.length - 1)) { pages.push(makePage()); page = pages[pages.length - 1]; startCat(true); }
+      page.rows.push(mode === 'internal'
+        ? '<tr class="cat-total"><td></td><td colspan="6">Subtotal - ' + esc(getBOQCategoryLabel(cat)) + '</td><td class="m-money strong">' + fmt(subtotal) + '</td></tr>'
+        : '<tr class="cat-total"><td></td><td colspan="4">Subtotal - ' + esc(getBOQCategoryLabel(cat)) + '</td><td class="m-money strong">' + fmt(subtotal) + '</td></tr>');
+      page.units += subUnit;
+      page.openCat = null;
+    });
+    return pages;
+  }
+
+  buildBOQPrintHtml = function(boq, project, mode) {
+    mode = mode || 'client';
+    var cfg = getCfg();
+    var preparedByName = cfg.company_prepare_name || 'Sujinda Tubtim';
+    var preparedByTitle = cfg.company_prepare_title || 'Prepared By';
+    var companySignature = cfg.company_signature_data || '';
+    var companyStamp = cfg.company_stamp_data || '';
+    var items = safeParseJSON(boq.items_json).map(function(r){ return Object.assign({}, r); });
+    var cats = getBOQCategoryOrder(items);
+    var categoryTotals = {};
+    items.forEach(function(r){
+      var cat = r.category || 'Other';
+      categoryTotals[cat] = categoryTotals[cat] || { total:0, supplier:0, profit:0, count:0 };
+      categoryTotals[cat].total += Number(r.final || r.supplierTotal || 0);
+      categoryTotals[cat].supplier += Number(r.supplierTotal || 0);
+      categoryTotals[cat].profit += Number(r.add || 0);
+      categoryTotals[cat].count += 1;
+    });
+    var summaryRows = cats.filter(function(cat){ return categoryTotals[cat]; }).map(function(cat){
+      return mode === 'internal'
+        ? '<tr><td>' + esc(getBOQCategoryLabel(cat)) + '</td><td class="right">' + (categoryTotals[cat].count || 0) + '</td><td class="right">' + fmt(categoryTotals[cat].supplier || 0) + '</td><td class="right">+' + fmt(categoryTotals[cat].profit || 0) + '</td><td class="right strong">' + fmt(categoryTotals[cat].total || 0) + '</td></tr>'
+        : '<tr><td>' + esc(getBOQCategoryLabel(cat)) + '</td><td class="right">' + (categoryTotals[cat].count || 0) + '</td><td class="right strong">' + fmt(categoryTotals[cat].total || 0) + '</td></tr>';
+    }).join('');
+
+    var pages = boqBuildPagedRows(items, mode);
+    var summaryUnits = 9.5;
+    var lastPage = pages[pages.length - 1];
+    var lastCap = pages.length === 1 ? 17.5 : 24;
+    if ((lastPage.units + summaryUnits) > lastCap) pages.push({ rows: [], units: 0, openCat: null, summaryOnly: true });
+
+    var styles = '<style>' +
+      '.boq-pages{background:#f3f4f6;padding:12px 0}.boq-page{page-break-after:always;break-after:page;margin:0 auto 10px}.boq-page:last-child{page-break-after:auto;break-after:auto}.boqdoc{width:210mm;min-height:297mm;background:#fff;color:#161616;margin:0 auto;padding:12mm 14mm 12mm;box-sizing:border-box;font-family:Arial,Helvetica,sans-serif;font-size:9.4px;line-height:1.42;box-shadow:0 0 0 1px #e5e7eb;position:relative;overflow:hidden;}.boqdoc *{box-sizing:border-box;}.min-head{display:grid;grid-template-columns:38mm 1fr;gap:10mm;align-items:start;padding-bottom:5mm;border-bottom:1px solid #9ca3af;}.min-logo{min-height:18mm;display:flex;align-items:flex-start;justify-content:flex-start;}.min-logo img{max-width:36mm;max-height:18mm;object-fit:contain;}.min-company{font-size:8.5px;line-height:1.45;color:#333;}.min-company b{font-size:10.2px;color:#111;}.min-title{display:grid;grid-template-columns:1fr 55mm;gap:8mm;align-items:start;margin:6mm 0 4.5mm;}.min-title h1{font-size:17.6px;line-height:1.1;margin:0;font-weight:800;letter-spacing:.1px;}.min-title .th{font-size:9.5px;color:#555;margin-top:.8mm;}.doc-meta{font-size:8.5px;border-left:1px solid #c7cdd4;padding-left:4mm;display:grid;gap:1mm;}.doc-meta .row{display:flex;justify-content:space-between;gap:5mm;border-bottom:1px solid #e5e7eb;padding-bottom:.7mm;}.label{color:#666;text-transform:uppercase;font-size:8px;letter-spacing:.2px;}.info-grid{display:grid;grid-template-columns:minmax(48mm,1fr) 62mm;gap:10mm;margin-bottom:5mm;align-items:start;}.info-title{font-size:8px;color:#666;text-transform:uppercase;font-weight:800;letter-spacing:.3px;margin-bottom:1.2mm;}.info-name{font-size:10.2px;font-weight:800;margin-bottom:1mm;}.info-text{font-size:8.8px;color:#333;white-space:pre-line;}.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:3.5mm 8mm;font-size:8.5px;}.detail-item{padding-bottom:1mm;}.detail-value{font-weight:700;margin-top:.4mm;}.items-min{width:100%;border-collapse:collapse;table-layout:fixed;margin-top:2mm;border:1px solid #8b8b8b;}.items-min th{font-size:8px;color:#444;text-transform:uppercase;letter-spacing:.25px;text-align:left;border:1px solid #8b8b8b;padding:1.2mm 1.3mm;background:#fafafa;}.items-min td{font-size:9px;border:1px solid #9a9a9a;padding:1.15mm 1.3mm;vertical-align:top;}.m-no{width:9mm;color:#555;text-align:center;}.m-desc{width:auto;}.m-center{text-align:center;width:16mm;}.m-money{text-align:right;width:24mm;}.strong{font-weight:800;}.item-title{font-weight:700;}.cat-row td{background:#f3f4f6!important;font-weight:800;text-transform:uppercase;letter-spacing:.15px;color:#222;border-top:1.4px solid #111!important;border-bottom:1px solid #777!important;}.cat-total td{background:#fbfbfb!important;font-weight:800;border-top:1px solid #777!important;}.summary-grid{display:grid;grid-template-columns:minmax(0,1fr) 52mm;gap:6mm;margin-top:6mm;align-items:start;}.summary-table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:8.6px;}.summary-table th,.summary-table td{border:1px solid #d6d6d6;padding:1.3mm;text-align:left;}.summary-table th{background:#fafafa;color:#555;text-transform:uppercase;font-size:7.5px;}.totals-min{width:100%;max-width:52mm;border-collapse:collapse;font-size:9px;table-layout:fixed;}.totals-min td{padding:1.5mm 0;border-bottom:1px solid #e5e7eb;}.totals-min td:last-child{text-align:right;font-weight:700;}.totals-min tr.total td{font-size:10.8px;font-weight:800;border-top:1px solid #9ca3af;border-bottom:1px solid #9ca3af;padding-top:2mm;padding-bottom:2mm;}.note-box{font-size:8.2px;color:#555;line-height:1.45;margin-top:4mm;}.sign-grid-min{display:grid;grid-template-columns:1fr 1fr;gap:18mm;margin-top:10mm;}.sign-min{position:relative;text-align:center;padding-top:1.8mm;min-height:22mm;}.sign-label{font-size:8px;color:#666;text-transform:uppercase;}.sign-name{font-size:10px;font-weight:700;margin-top:1.5mm;}.sign-role{font-size:8.5px;color:#555;}.signature-img{position:absolute;left:50%;top:-9.5mm;transform:translateX(-50%);max-width:38mm;max-height:14mm;object-fit:contain;}.stamp-img{position:absolute;left:50%;top:-13mm;transform:translateX(-50%);max-width:38mm;max-height:20mm;object-fit:contain;opacity:.85;}.right{text-align:right;}.summary-block{page-break-inside:avoid;break-inside:avoid;}@media print{body{background:#fff}.no-print{display:none!important}.boq-pages{padding:0}.boq-page{margin:0}.boqdoc{box-shadow:none;margin:0;width:210mm;min-height:297mm;} .items-min thead{display:table-header-group}.items-min tr,.summary-grid,.summary-table tr,.totals-min tr,.sign-grid-min,.note-box{page-break-inside:avoid;break-inside:avoid}.items-min th{background:#fafafa!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.cat-row td,.cat-total td{ -webkit-print-color-adjust:exact;print-color-adjust:exact;}@page{size:A4;margin:0}}' +
+      '</style>';
+
+    var pageHtml = pages.map(function(pg, idx){
+      var cols = mode === 'internal'
+        ? '<colgroup><col style="width:9mm"><col><col style="width:14mm"><col style="width:14mm"><col style="width:24mm"><col style="width:22mm"><col style="width:24mm"><col style="width:26mm"></colgroup><thead><tr><th>No.</th><th>Description / รายละเอียด</th><th style="text-align:center">Qty</th><th style="text-align:center">Unit</th><th style="text-align:right">Supplier</th><th style="text-align:right">Add</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Amount</th></tr></thead>'
+        : '<colgroup><col style="width:9mm"><col><col style="width:16mm"><col style="width:16mm"><col style="width:30mm"><col style="width:32mm"></colgroup><thead><tr><th>No.</th><th>Description / รายละเอียด</th><th style="text-align:center">Qty</th><th style="text-align:center">Unit</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Amount</th></tr></thead>';
+      var doc = '<div class="boqdoc">' + boqDocCoreHeader(project, boq, idx + 1, pages.length, mode) + '<table class="items-min">' + cols + '<tbody>' + (pg.rows || []).join('') + '</tbody></table>';
+      if (idx === pages.length - 1) {
+        doc += '<div class="summary-grid summary-block"><div><div class="info-title">Category Summary / สรุปตามหมวดหมู่</div><table class="summary-table"><thead><tr>' + (mode === 'internal' ? '<th>Category</th><th class="right" style="width:18mm">Items</th><th class="right" style="width:28mm">Supplier</th><th class="right" style="width:24mm">Add</th><th class="right" style="width:30mm">Final</th>' : '<th>Category</th><th class="right" style="width:22mm">Items</th><th class="right" style="width:34mm">Amount</th>') + '</tr></thead><tbody>' + summaryRows + '</tbody></table><div class="note-box">' + (mode === 'internal' ? 'หมายเหตุ: เอกสารฉบับนี้ใช้ภายใน เพื่อเปรียบเทียบราคาทุน Supplier, กำไรที่บวกเพิ่ม และราคาขายสุดท้าย สามารถใช้ประกอบการแก้ไข BOQ และตรวจสอบความสมเหตุสมผลของราคาได้' : 'หมายเหตุ: เอกสาร BOQ นี้สำหรับลูกค้า แสดงเฉพาะราคาขายหลังบวกกำไรแล้ว และสรุปตามหมวดหมู่เพื่อใช้งานร่วมกับใบเสนอราคา') + '</div></div><div><table class="totals-min">' + (mode === 'internal' ? '<tr><td>Supplier Total</td><td>' + fmt(boq.supplier_total || 0) + '</td></tr><tr><td>Added Profit</td><td>+' + fmt(boq.profit_amount || 0) + '</td></tr>' : '') + '<tr><td>Subtotal</td><td>' + fmt(boq.final_total || 0) + '</td></tr><tr class="total"><td>Total</td><td>' + fmt(boq.final_total || 0) + '</td></tr></table></div></div>' +
+          '<div class="sign-grid-min"><div class="sign-min"><div class="sign-label">Client Acknowledgement</div><div class="sign-name">____________________________</div><div class="sign-role">Signature / Date</div></div><div class="sign-min">' + (companyStamp ? '<img class="stamp-img" src="' + companyStamp + '" alt="Company stamp">' : '') + (companySignature ? '<img class="signature-img" src="' + companySignature + '" alt="Signature">' : '') + '<div class="sign-label">Prepared By</div><div class="sign-name">' + esc(preparedByName) + '</div><div class="sign-role">' + esc(preparedByTitle) + '<br>' + fmtDate(boq.created_at || new Date().toISOString()) + '</div></div></div>';
+      }
+      doc += '</div>';
+      return '<section class="boq-page">' + doc + '</section>';
+    }).join('');
+    return styles + '<div class="boq-pages">' + pageHtml + '</div>';
+  };
+
+  previewCurrentBOQ = function() {
+    if (!_boqAI) return;
+    var project = boqGetProject(_boqAI.projectId);
+    var stats = boqCalcStats(_boqAI.items || []);
+    var temp = { supplier_file_name:_boqAI.fileName || 'BOQ Preview', supplier_total:stats.supplier, profit_amount:stats.profit, final_total:stats.final, profit_percent:stats.margin, items_json:JSON.stringify(_boqAI.items), created_at:new Date().toISOString(), project_name:_boqAI.projectName };
+    openDSRPrintOverlay('BOQ Preview', 'BOQ_preview', buildBOQPrintHtml(temp, project, 'client'), false);
+  };
+  window.previewCurrentSupplierBOQ = function() {
+    if (!_boqAI) return;
+    var project = boqGetProject(_boqAI.projectId);
+    var stats = boqCalcStats(_boqAI.items || []);
+    var temp = { supplier_file_name:_boqAI.fileName || 'Supplier BOQ Preview', supplier_total:stats.supplier, profit_amount:stats.profit, final_total:stats.final, profit_percent:stats.margin, items_json:JSON.stringify(_boqAI.items), created_at:new Date().toISOString(), project_name:_boqAI.projectName };
+    openDSRPrintOverlay('Supplier BOQ Preview', 'BOQ_supplier_preview', buildBOQPrintHtml(temp, project, 'internal'), false);
+  };
+  previewLatestBOQ = function(projId, quotationId) {
+    var boq = latestProjectBOQ(projId, quotationId);
+    if (!boq) { showToast('ยังไม่มี BOQ สำหรับใบเสนอราคานี้', 'error'); return false; }
+    var project = boqGetProject(projId);
+    return openDSRPrintOverlay('BOQ Attachment', 'BOQ_' + (project ? project.project_name || projId : projId), buildBOQPrintHtml(boq, project, 'client'), false);
+  };
+  window.previewLatestSupplierBOQ = function(projId, quotationId) {
+    var boq = latestProjectBOQ(projId, quotationId);
+    if (!boq) { showToast('ยังไม่มี BOQ สำหรับใบเสนอราคานี้', 'error'); return false; }
+    var project = boqGetProject(projId);
+    return openDSRPrintOverlay('Supplier BOQ', 'Supplier_BOQ_' + (project ? project.project_name || projId : projId), buildBOQPrintHtml(boq, project, 'internal'), false);
+  };
+})();
+/* ===== END BOQ EXTENSION PATCH ===== */
+
+/* ===== BOQ SAVED EDITABLE PATCH ===== */
+function htmlText(v) { return esc(v || '').replace(/\n/g, '<br>'); }
+(function(){
+  var _oldSaveBOQToProject = saveBOQToProject;
+
+  function boqMoney(v) {
+    return roundHU(parseFloat(String(v == null ? '' : v).replace(/,/g, '').trim()) || 0);
+  }
+  function normalizeSavedBOQItem(r, i) {
+    r = r || {};
+    var qty = parseFloat(r.qty || r.quantity || 1) || 1;
+    var supplierTotal = boqMoney(r.supplierTotal != null ? r.supplierTotal : (r.supplier_total != null ? r.supplier_total : (r.total != null ? r.total : r.amount)));
+    var supplierUnit = boqMoney(r.supplierUnit != null ? r.supplierUnit : (r.supplier_unit != null ? r.supplier_unit : (r.unitPrice != null ? r.unitPrice : r.unit_price)));
+    if (!supplierUnit && qty) supplierUnit = roundHU(supplierTotal / qty);
+    if (!supplierTotal && supplierUnit && qty) supplierTotal = roundHU(supplierUnit * qty);
+    var final = boqMoney(r.final != null ? r.final : (r.finalTotal != null ? r.finalTotal : (r.final_total != null ? r.final_total : supplierTotal)));
+    var add = boqMoney(r.add != null ? r.add : (r.profit != null ? r.profit : (final - supplierTotal)));
+    final = roundHU(supplierTotal + add);
+    return {
+      id: r.id || (i + 1),
+      item: String(r.item || r.description || r.desc || ('Item ' + (i + 1))).trim(),
+      qty: qty,
+      unit: String(r.unit || r.uom || 'lot'),
+      supplierUnit: supplierUnit,
+      supplierTotal: supplierTotal,
+      category: guessBOQCategory(r.category || r.item || r.description || r.desc || 'Other'),
+      add: add,
+      final: final
+    };
+  }
+  function calcBOQStats(items) {
+    var supplierTotal = roundHU((items || []).reduce(function(s,r){ return s + (Number(r.supplierTotal)||0); }, 0));
+    var finalTotal = roundHU((items || []).reduce(function(s,r){ return s + (Number(r.final)||Number(r.supplierTotal)||0); }, 0));
+    var profit = roundHU(finalTotal - supplierTotal);
+    var margin = supplierTotal > 0 ? boqPercent(profit / supplierTotal * 100) : 0;
+    return { supplierTotal:supplierTotal, finalTotal:finalTotal, profit:profit, margin:margin };
+  }
+  function refreshBOQSummaryUI() {
+    if (!_boqAI || !_boqAI.items) return;
+    var st = calcBOQStats(_boqAI.items);
+    var set = function(id, txt){ var el = document.getElementById(id); if (el) el.textContent = txt; };
+    set('boq-supplier-total', fmt(st.supplierTotal));
+    set('boq-profit-total', '+' + fmt(st.profit));
+    set('boq-final-total', fmt(st.finalTotal));
+    set('boq-margin-total', st.margin + '%');
+  }
+
+  window.openSavedBOQEditor = function(projId, quotationId) {
+    var boq = latestProjectBOQ(projId, quotationId);
+    if (!boq) {
+      showToast('ยังไม่มี BOQ ให้ปรับ', 'error');
+      openBOQAiPanel(projId, quotationId || '');
+      return;
+    }
+    var project = allData.find(function(r){ return r.record_type === 'project' && r.project_id === projId; });
+    var q = quotationId ? allData.find(function(r){ return r.__backendId === quotationId; }) : (boq.quotation_id ? allData.find(function(r){ return r.__backendId === boq.quotation_id; }) : getQuotation(projId));
+    var items = safeParseJSON(boq.items_json).map(normalizeSavedBOQItem);
+    _boqAI = {
+      projectId: projId,
+      quotationId: q ? q.__backendId : (boq.quotation_id || ''),
+      projectName: project ? (project.project_name || 'Untitled') : 'Untitled',
+      clientName: project ? (project.client_name || '-') : '-',
+      stage: 'pricing',
+      fileName: boq.supplier_file_name || 'Saved BOQ',
+      fileType: 'saved',
+      error: '',
+      running: false,
+      apiKey: localStorage.getItem('dsr_api_key') || '',
+      items: items,
+      targetProfit: String(boq.target_profit != null ? boq.target_profit : (boq.profit_amount || '')),
+      aiDone: true,
+      isEditingExisting: true,
+      boqRecordId: boq.__backendId,
+      originalBOQ: boq
+    };
+    renderBOQAiPanel();
+  };
+
+  window.boqDeleteRow = function(index) {
+    if (!_boqAI || !_boqAI.items || !_boqAI.items[index]) return;
+    var itemName = _boqAI.items[index].item || ('รายการที่ ' + (index + 1));
+    showConfirm('ลบรายการ BOQ นี้?\n' + itemName, function(){
+      _boqAI.items.splice(index, 1);
+      _boqAI.items.forEach(function(r,i){ r.id = i + 1; });
+      renderBOQAiPanel();
+    });
+  };
+  window.boqDuplicateRow = function(index) {
+    if (!_boqAI || !_boqAI.items || !_boqAI.items[index]) return;
+    var copy = Object.assign({}, _boqAI.items[index]);
+    copy.id = _boqAI.items.length + 1;
+    copy.item = (copy.item || 'Item') + ' (copy)';
+    _boqAI.items.splice(index + 1, 0, copy);
+    _boqAI.items.forEach(function(r,i){ r.id = i + 1; });
+    renderBOQAiPanel();
+  };
+
+  saveBOQToProject = async function() {
+    if (!_boqAI || !_boqAI.items || !_boqAI.items.length) return;
+    if (!_boqAI.isEditingExisting || !_boqAI.boqRecordId) {
+      return _oldSaveBOQToProject();
+    }
+    var projId = _boqAI.projectId;
+    var boqRecord = allData.find(function(r){ return r.__backendId === _boqAI.boqRecordId; });
+    var q = _boqAI.quotationId ? allData.find(function(r){ return r.__backendId === _boqAI.quotationId; }) : null;
+    if (!q && boqRecord && boqRecord.quotation_id) q = allData.find(function(r){ return r.__backendId === boqRecord.quotation_id; });
+    if (!q) q = getQuotation(projId);
+    try {
+      if (!q) q = await createQuotationForBOQ(projId);
+      var st = calcBOQStats(_boqAI.items);
+      var updatedBOQ = Object.assign({}, boqRecord || {}, {
+        record_type: 'boq',
+        boq_id: (boqRecord && boqRecord.boq_id) || genId(),
+        project_id: projId,
+        quotation_id: q.__backendId,
+        supplier_file_name: _boqAI.fileName || (boqRecord && boqRecord.supplier_file_name) || 'BOQ',
+        supplier_total: st.supplierTotal,
+        target_profit: boqParseMoney(_boqAI.targetProfit),
+        final_total: st.finalTotal,
+        profit_amount: st.profit,
+        profit_percent: st.margin,
+        items_json: JSON.stringify(_boqAI.items),
+        created_at: (boqRecord && boqRecord.created_at) || new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
+      var idx = allData.findIndex(function(r){ return r.__backendId === _boqAI.boqRecordId; });
+      if (idx >= 0) allData[idx] = updatedBOQ;
+      var res = await window.dataSdk.update(updatedBOQ);
+      if (!res || !res.isOk) throw new Error('บันทึก BOQ ไม่สำเร็จ');
+
+      var summaryItems = buildBOQSummaryItems(_boqAI.items);
+      var project = allData.find(function(r){ return r.record_type === 'project' && r.project_id === projId; });
+      q.doc_subject = q.doc_subject || (project ? (project.project_name || '') : '');
+      q.ref_no = q.ref_no || projId;
+      q.remark_text = q.remark_text || 'See attached BOQ for details.';
+      await recalcQuotation(q, summaryItems);
+      await addLog(projId, 'ปรับ BOQ', 'อัปเดต BOQ และ Sync ใบเสนอราคา ' + (q.doc_number || ''));
+      showToast('บันทึกการปรับ BOQ และ Sync ใบเสนอราคาแล้ว');
+      closeBOQAiPanel();
+      navigate('project-detail', projId);
+    } catch(err) {
+      showToast((err && err.message) || 'บันทึกไม่สำเร็จ', 'error');
+    }
+  };
+
+  renderProjectBOQSummary = function(projId, quotationId) {
+    var b = latestProjectBOQ(projId, quotationId);
+    if (!b) {
+      return '<div class="mt-4 mb-5 bg-slate-950/50 border border-dashed border-slate-700 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">' +
+        '<div><div class="text-sm font-semibold text-white">BOQ Attachment</div><div class="text-xs text-slate-500 mt-1">ยังไม่มี BOQ แนบกับใบเสนอราคานี้</div></div>' +
+        '<button class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs flex items-center gap-1" onclick="openBOQAiPanel(\'' + projId + '\',\'' + (quotationId || '') + '\')"><i data-lucide="sparkles" class="w-3 h-3"></i> BOQ AI Extract</button>' +
+      '</div>';
+    }
+    return '<div class="mt-4 mb-5 bg-slate-950/60 border border-orange-500/30 rounded-xl p-4">' +
+      '<div class="flex flex-wrap items-start justify-between gap-3">' +
+        '<div><div class="text-sm font-semibold text-white flex items-center gap-2"><i data-lucide="paperclip" class="w-4 h-4 text-orange-400"></i> BOQ Attachment</div>' +
+        '<div class="text-xs text-slate-500 mt-1">' + esc(b.supplier_file_name || 'BOQ') + ' · สร้าง ' + fmtDate(b.created_at) + (b.updated_at ? ' · แก้ล่าสุด ' + fmtDate(b.updated_at) : '') + '</div></div>' +
+        '<div class="flex gap-2 flex-wrap">' +
+          '<button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs" onclick="previewLatestSupplierBOQ(\'' + projId + '\',\'' + (quotationId || '') + '\')">Supplier BOQ</button>' +
+          '<button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs" onclick="previewLatestBOQ(\'' + projId + '\',\'' + (quotationId || '') + '\')">Client BOQ</button>' +
+          '<button class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs font-semibold" onclick="openSavedBOQEditor(\'' + projId + '\',\'' + (quotationId || '') + '\')">ปรับ BOQ</button>' +
+          '<button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs" onclick="openBOQAiPanel(\'' + projId + '\',\'' + (quotationId || '') + '\')">BOQ AI ใหม่</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="grid grid-cols-2 md:grid-cols-4 gap-2 mt-4">' +
+        '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Supplier Cost</div><div class="mono text-sm text-slate-200">' + fmt(b.supplier_total||0) + '</div></div>' +
+        '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Profit</div><div class="mono text-sm text-orange-400">+' + fmt(b.profit_amount||0) + '</div></div>' +
+        '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Final</div><div class="mono text-sm text-emerald-400">' + fmt(b.final_total||0) + '</div></div>' +
+        '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Margin</div><div class="mono text-sm text-purple-400">' + (b.profit_percent || 0) + '%</div></div>' +
+      '</div>' +
+    '</div>';
+  };
+
+  renderBOQPricingStep = function(supplierTotal, finalTotal, profit, margin) {
+    var cats = {};
+    (_boqAI.items || []).forEach(function(r){ cats[r.category] = (cats[r.category] || 0) + 1; });
+    var editMode = !!_boqAI.isEditingExisting;
+    var rows = (_boqAI.items || []).map(function(r,i){
+      var catColor = BOQ_CAT_COLOR[r.category] || '#888';
+      return '<tr class="border-b border-slate-800">' +
+        '<td class="py-2 pr-2 text-slate-500 text-xs px-3">' + (i+1) + '</td>' +
+        '<td class="py-2 pr-2"><div class="text-xs text-white leading-5">' + esc(r.item || '-') + '</div><div class="text-[10px] text-slate-500">' + esc(r.qty || 0) + ' ' + esc(r.unit || '') + ' × ' + fmt(r.supplierUnit || 0) + '</div></td>' +
+        '<td class="py-2 pr-2"><span class="px-2 py-0.5 rounded-full text-[10px]" style="background:' + catColor + '22;color:' + catColor + '">' + esc(r.category || 'Other') + '</span></td>' +
+        '<td class="py-2 pr-2 text-right mono text-xs text-slate-300">' + fmt(r.supplierTotal || 0) + '</td>' +
+        '<td class="py-2 pr-2"><input id="boq-add-' + i + '" type="text" inputmode="decimal" value="' + fmt(r.add || 0) + '" class="w-24 px-2 py-1 bg-slate-900 border border-slate-700 rounded text-xs mono text-right text-orange-300 focus:border-orange-500 focus:outline-none" onfocus="this.select()" oninput="boqManualAddInput(' + i + ',this);setTimeout(function(){ if(window.refreshBOQSummaryUI) refreshBOQSummaryUI(); },0)"></td>' +
+        '<td class="py-2 pr-2 text-right mono text-xs font-semibold text-emerald-400" id="boq-final-' + i + '">' + fmt(r.final || r.supplierTotal || 0) + '</td>' +
+        '<td class="py-2 px-3 text-right"><div class="flex justify-end gap-1"><button class="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-[11px] text-slate-200" onclick="boqOpenItemEditor(' + i + ')">Edit</button><button class="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-[11px] text-slate-400" onclick="boqDuplicateRow(' + i + ')">Copy</button><button class="px-2 py-1 bg-red-900/40 hover:bg-red-900 rounded-lg text-[11px] text-red-300" onclick="boqDeleteRow(' + i + ')">Del</button></div></td>' +
+      '</tr>';
+    }).join('');
+
+    return '<div class="flex-1 overflow-auto p-4 md:p-6">' +
+      '<div class="grid lg:grid-cols-[330px_1fr] gap-5">' +
+        '<aside class="space-y-4">' +
+          '<div class="bg-slate-950 border border-slate-800 rounded-2xl p-5">' +
+            '<div class="text-xs text-slate-500 uppercase tracking-wider mb-1">Supplier Cost</div><div id="boq-supplier-total" class="text-3xl mono text-white font-semibold mb-1">' + fmt(supplierTotal) + '</div><div class="text-xs text-slate-600">' + (_boqAI.items || []).length + ' รายการ · ' + Object.keys(cats).length + ' หมวด' + (editMode ? ' · กำลังปรับ BOQ ที่บันทึกไว้' : '') + '</div>' +
+            '<div class="h-px bg-slate-800 my-4"></div>' +
+            '<label class="text-xs text-slate-400">Desired Profit / กำไรที่ต้องการ</label>' +
+            '<div class="flex items-center gap-2 mt-2"><input id="boq-target-profit" type="text" inputmode="decimal" value="' + esc(_boqAI.targetProfit || '') + '" placeholder="เช่น 80000" class="flex-1 px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white mono text-right focus:border-orange-500 focus:outline-none" oninput="boqTargetProfitInput(this.value)" onkeydown="if(event.key===\'Enter\') runBOQAI()"><span class="text-xs text-slate-500">THB</span></div>' +
+            '<button class="mt-3 w-full px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm font-semibold flex items-center justify-center gap-2" onclick="runBOQAI()"><i data-lucide="sparkles" class="w-4 h-4"></i> APPLY AI PRICING</button>' +
+          '</div>' +
+          '<div class="bg-slate-950 border border-slate-800 rounded-2xl p-5 space-y-3">' +
+            '<div class="flex justify-between text-sm"><span class="text-slate-500">Profit Added</span><span class="mono text-orange-400" id="boq-profit-total">+' + fmt(profit) + '</span></div>' +
+            '<div class="flex justify-between text-sm"><span class="text-slate-500">Final Selling Price</span><span class="mono text-emerald-400 font-semibold" id="boq-final-total">' + fmt(finalTotal) + '</span></div>' +
+            '<div class="flex justify-between text-sm"><span class="text-slate-500">Margin</span><span class="mono text-purple-400" id="boq-margin-total">' + margin + '%</span></div>' +
+            '<div class="h-px bg-slate-800"></div>' +
+            '<button class="w-full px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-semibold" onclick="saveBOQToProject()">' + (editMode ? 'Save BOQ + Sync Quotation' : 'Confirm + Sync Quotation') + '</button>' +
+            '<button class="w-full px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm" onclick="previewCurrentSupplierBOQ()">Preview Supplier BOQ</button>' +
+            '<button class="w-full px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm" onclick="previewCurrentBOQ()">Preview Client BOQ</button>' +
+          '</div>' +
+          '<div class="bg-slate-950 border border-slate-800 rounded-2xl p-5">' +
+            '<div class="text-sm font-semibold text-white mb-2">BOQ Manual Edit + AI</div>' +
+            '<div class="text-xs text-slate-500 leading-6">BOQ ของเราปรับได้: แก้หมวด รายการ จำนวน ราคาทุน Add และ Final ได้เอง แล้วกด Save เพื่ออัปเดต BOQ เดิมและ Sync กลับใบเสนอราคา</div>' +
+          '</div>' +
+        '</aside>' +
+        '<main class="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden">' +
+          '<div class="p-4 border-b border-slate-800 flex items-center justify-between gap-2"><div><div class="text-sm font-semibold text-white">' + (editMode ? 'ปรับ BOQ ที่บันทึกไว้' : 'BOQ Pricing Table') + '</div><div class="text-xs text-slate-500">มีราคาก่อนบวก + Add + Final และปรับ manual ได้ทุกแถว</div></div><button class="px-3 py-1.5 bg-slate-800 text-xs rounded-lg" onclick="boqAddBlankRow()">+ Add Row</button></div>' +
+          '<div class="overflow-auto"><table class="w-full text-sm"><thead><tr class="border-b border-slate-800 text-[10px] uppercase tracking-wider text-slate-500"><th class="text-left py-2 px-3 w-10">#</th><th class="text-left py-2">Item</th><th class="text-left py-2 w-28">Cat</th><th class="text-right py-2 w-32">Supplier</th><th class="text-right py-2 w-28">Add</th><th class="text-right py-2 w-32">Final</th><th class="text-right py-2 px-3 w-40"></th></tr></thead><tbody id="boq-items-body">' + rows + '</tbody></table></div>' +
+        '</main>' +
+      '</div></div>';
+  };
+
+  window.refreshBOQSummaryUI = refreshBOQSummaryUI;
+})();
+/* ===== END BOQ SAVED EDITABLE PATCH ===== */
+
+
+/* ===== BOQ REASON API PATCH ===== */
+(function(){
+  function reasonEsc(v) {
+    if (typeof esc === 'function') return esc(v);
+    return String(v == null ? '' : v).replace(/[&<>\"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]; });
+  }
+  function reasonFmt(n) {
+    if (typeof fmt === 'function') return fmt(n || 0);
+    return Number(n || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function reasonRound(n) {
+    if (typeof roundHU === 'function') return roundHU(n || 0);
+    return Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
+  }
+  function reasonPct(add, base) {
+    base = Number(base || 0);
+    if (!base) return '0.00';
+    return (Number(add || 0) / base * 100).toFixed(2);
+  }
+  var TH_MARKET_BENCHMARKS = {
+    Preliminaries: { range:'8–15%', text:'งานเตรียมการเป็นค่า setup หน้างาน เอกสาร ประกัน และระบบชั่วคราว ควรบวกแบบระวังเพราะเป็นยอดที่ลูกค้ามองเห็นง่าย' },
+    EarthworkFoundation: { range:'10–18%', text:'งานดินและฐานรากมีความเสี่ยงจากสภาพพื้นที่จริง ปริมาณที่เปลี่ยนได้ และงานแก้ไขหน้างาน' },
+    Structural: { range:'8–15%', text:'งานโครงสร้างมีราคาวัสดุและค่าแรงที่เทียบตลาดได้ แต่มีความรับผิดชอบสูง จึงควรบวกช่วงกลาง' },
+    Architectural: { range:'10–18%', text:'งานสถาปัตย์มีรายละเอียดผิว งานเก็บจบ และโอกาสแก้ไขหน้างาน จึงควรมี margin กลาง' },
+    Electrical: { range:'8–15%', text:'งานไฟฟ้ามีอุปกรณ์ที่เทียบราคาได้ แต่ต้องเผื่อการติดตั้ง ทดสอบ และความปลอดภัย' },
+    SanitaryPlumbing: { range:'8–15%', text:'งานสุขาภิบาลและประปามีความเสี่ยงเรื่องรั่วซึม การทดสอบ และการแก้ไขหลังติดตั้ง' },
+    HVAC: { range:'8–16%', text:'งานปรับอากาศมีต้นทุนเครื่องและอุปกรณ์ที่เทียบได้ แต่มีค่าออกแบบระบบ ติดตั้ง และ commissioning' },
+    FireProtection: { range:'6–14%', text:'งานป้องกันอัคคีภัยเกี่ยวข้องกับมาตรฐานและอุปกรณ์เฉพาะ ควรตรวจราคา supplier เพิ่มก่อนสรุป' },
+    ExternalLandscape: { range:'10–18%', text:'งานภายนอกและภูมิทัศน์มีความเสี่ยงจากพื้นที่จริง สภาพอากาศ และปริมาณหน้างาน' },
+    FurnitureEquipment: { range:'12–25%', text:'งานเฟอร์นิเจอร์และครุภัณฑ์มีรายละเอียดผลิต วัดหน้างาน งานเก็บจบ และความคาดหวังด้านคุณภาพ' },
+    Other: { range:'8–15%', text:'รายการที่ยังไม่ชัดควรบวกแบบ conservative และควรตรวจหมวดหรือขอราคา supplier เพิ่ม' }
+  };
+  function getReasonStats() {
+    var items = (_boqAI && _boqAI.items) ? _boqAI.items : [];
+    var totalSupplier = 0, totalAdd = 0, totalFinal = 0;
+    var cats = {};
+    items.forEach(function(r){
+      var cat = r.category || 'Other';
+      var supplier = Number(r.supplierTotal || 0);
+      var add = Number(r.add || 0);
+      var finalVal = Number(r.final || supplier + add || supplier);
+      totalSupplier += supplier; totalAdd += add; totalFinal += finalVal;
+      cats[cat] = cats[cat] || { category:cat, supplier:0, add:0, final:0, count:0, examples:[] };
+      cats[cat].supplier += supplier;
+      cats[cat].add += add;
+      cats[cat].final += finalVal;
+      cats[cat].count += 1;
+      cats[cat].examples.push({ item:r.item || '-', supplier:supplier, add:add, final:finalVal, qty:r.qty || 0, unit:r.unit || '' });
+    });
+    Object.keys(cats).forEach(function(cat){
+      cats[cat].supplier = reasonRound(cats[cat].supplier);
+      cats[cat].add = reasonRound(cats[cat].add);
+      cats[cat].final = reasonRound(cats[cat].final);
+      cats[cat].margin = reasonPct(cats[cat].add, cats[cat].supplier);
+      cats[cat].examples = cats[cat].examples.sort(function(a,b){ return Number(b.add || 0) - Number(a.add || 0); }).slice(0,3);
+    });
+    return {
+      projectName: (_boqAI && _boqAI.projectName) || '-',
+      clientName: (_boqAI && _boqAI.clientName) || '-',
+      targetProfit: (_boqAI && _boqAI.targetProfit) || '',
+      supplierTotal: reasonRound(totalSupplier),
+      addTotal: reasonRound(totalAdd),
+      finalTotal: reasonRound(totalFinal),
+      margin: reasonPct(totalAdd, totalSupplier),
+      categories: Object.keys(cats).map(function(k){ return cats[k]; })
+        .sort(function(a,b){ return Number(b.add || 0) - Number(a.add || 0); }),
+      topItems: items.map(function(r){
+        var supplier = Number(r.supplierTotal || 0), add = Number(r.add || 0), finalVal = Number(r.final || supplier + add || supplier);
+        return { item:r.item || '-', category:r.category || 'Other', supplier:supplier, add:add, final:finalVal, margin:reasonPct(add, supplier), qty:r.qty || 0, unit:r.unit || '' };
+      }).sort(function(a,b){ return Number(b.add || 0) - Number(a.add || 0); }).slice(0,8)
+    };
+  }
+  function buildLocalReasonPreview() {
+    var st = getReasonStats();
+    if (!st.categories.length) {
+      return '<div class="text-xs text-slate-500 leading-6">ยังไม่มีรายการ BOQ ให้สรุป Reason</div>';
+    }
+    var rows = st.categories.map(function(c){
+      var b = TH_MARKET_BENCHMARKS[c.category] || TH_MARKET_BENCHMARKS.Other;
+      var ok = Number(c.margin) <= parseFloat(String(b.range).split('–')[1] || '15');
+      return '<div class="rounded-xl bg-slate-900/70 border border-slate-800 p-3">' +
+        '<div class="flex items-start justify-between gap-3"><div><div class="text-xs font-semibold text-white">' + reasonEsc(c.category) + '</div><div class="text-[10px] text-slate-500 mt-0.5">Benchmark ตลาดโดยประมาณ: ' + reasonEsc(b.range) + '</div></div>' +
+        '<div class="text-right"><div class="mono text-xs ' + (ok ? 'text-emerald-400' : 'text-amber-400') + '">+' + c.margin + '%</div><div class="text-[10px] text-slate-600">margin ตอนนี้</div></div></div>' +
+        '<div class="grid grid-cols-3 gap-2 mt-2 text-[10px]"><div class="text-slate-500">ทุน<br><span class="mono text-slate-200">' + reasonFmt(c.supplier) + '</span></div><div class="text-slate-500">เพิ่ม<br><span class="mono text-orange-300">+' + reasonFmt(c.add) + '</span></div><div class="text-slate-500">ขาย<br><span class="mono text-emerald-300">' + reasonFmt(c.final) + '</span></div></div>' +
+        '<div class="text-[11px] text-slate-400 leading-5 mt-2">' + reasonEsc(b.text) + '</div>' +
+      '</div>';
+    }).join('');
+    return '<div class="space-y-2">' +
+      '<div class="rounded-xl bg-orange-950/20 border border-orange-500/20 p-3 text-xs leading-6 text-orange-100">' +
+        '<b>สรุปเร็ว:</b> ราคาทุนรวม <span class="mono">' + reasonFmt(st.supplierTotal) + '</span> บวกกำไรรวม <span class="mono">+' + reasonFmt(st.addTotal) + '</span> เป็นราคาขาย <span class="mono">' + reasonFmt(st.finalTotal) + '</span> margin รวม <span class="mono">' + st.margin + '%</span>' +
+      '</div>' + rows +
+      '<div class="text-[10px] text-slate-600 leading-5">กด “วิเคราะห์ด้วย API” เพื่อให้ AI สรุปเป็นภาษาลูกค้า: ราคาตลาดโดยประมาณ, เหตุผลว่าทำไมบวกตรงไหน และจุดที่ควรระวังแบบสั้น ๆ</div>' +
+    '</div>';
+  }
+  function textToReasonHtml(txt) {
+    txt = String(txt || '').trim();
+    if (!txt) return buildLocalReasonPreview();
+    return '<div class="text-xs leading-6 text-slate-200 whitespace-pre-line">' + reasonEsc(txt) + '</div>';
+  }
+  function boqReasonCardHTML() {
+    var saved = (_boqAI && _boqAI.reasonSummary) ? textToReasonHtml(_boqAI.reasonSummary) : buildLocalReasonPreview();
+    return '<div class="bg-slate-950 border border-orange-500/25 rounded-2xl p-5">' +
+      '<div class="flex items-start justify-between gap-3 mb-3">' +
+        '<div><div class="text-sm font-semibold text-white flex items-center gap-2"><i data-lucide="brain-circuit" class="w-4 h-4 text-orange-400"></i> Reason by AI</div><div class="text-xs text-slate-500 mt-1 leading-5">สรุปเหตุผลการบวกราคา + benchmark ตลาดไทยแบบเข้าใจง่าย</div></div>' +
+        '<button class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-[11px] font-semibold flex-shrink-0" onclick="generateBOQMarketReason()">วิเคราะห์ด้วย API</button>' +
+      '</div>' +
+      '<div id="boq-reason-box" class="min-h-[180px] max-h-[420px] overflow-auto rounded-xl border border-slate-800 bg-slate-950/70 p-3">' + saved + '</div>' +
+      '<div class="flex gap-2 mt-3">' +
+        '<button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[11px]" onclick="copyBOQReasonSummary()">Copy Reason</button>' +
+        '<button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[11px]" onclick="resetBOQReasonSummary()">Reset</button>' +
+      '</div>' +
+      '<div class="text-[10px] text-slate-600 leading-5 mt-2">หมายเหตุ: ถ้ายังไม่ได้ต่อฐานข้อมูลราคา real-time ระบบจะให้ “ช่วงราคา/markup ตลาดโดยประมาณ” เพื่อช่วยตัดสินใจ ไม่ใช่ใบเสนอราคากลางจาก supplier จริง</div>' +
+    '</div>';
+  }
+  var _prevRenderBOQPricingStepForReason = renderBOQPricingStep;
+  renderBOQPricingStep = function(supplierTotal, finalTotal, profit, margin) {
+    var html = _prevRenderBOQPricingStepForReason.apply(this, arguments);
+    var manualCard = '<div class="bg-slate-950 border border-slate-800 rounded-2xl p-5">' +
+            '<div class="text-sm font-semibold text-white mb-2">BOQ Manual Edit + AI</div>' +
+            '<div class="text-xs text-slate-500 leading-6">BOQ ของเราปรับได้: แก้หมวด รายการ จำนวน ราคาทุน Add และ Final ได้เอง แล้วกด Save เพื่ออัปเดต BOQ เดิมและ Sync กลับใบเสนอราคา</div>' +
+          '</div>';
+    if (html.indexOf('id="boq-reason-box"') >= 0) return html;
+    if (html.indexOf(manualCard) >= 0) return html.replace(manualCard, manualCard + boqReasonCardHTML());
+    return html.replace('</aside>', boqReasonCardHTML() + '</aside>');
+  };
+  function setReasonBox(html) {
+    var box = document.getElementById('boq-reason-box');
+    if (box) box.innerHTML = html;
+  }
+  window.generateBOQMarketReason = async function() {
+    if (!_boqAI) return;
+    var key = sanitizeBOQApiKey((_boqAI && _boqAI.apiKey) || localStorage.getItem('dsr_api_key') || '');
+    var err = validateBOQApiKeyValue(key);
+    if (err) {
+      setReasonBox('<div class="rounded-xl bg-red-950/40 border border-red-800 p-3 text-xs text-red-200 leading-6">' + reasonEsc(err) + '</div>');
+      return;
+    }
+    _boqAI.apiKey = key;
+    localStorage.setItem('dsr_api_key', key);
+    var st = getReasonStats();
+    setReasonBox('<div class="flex items-center gap-2 text-xs text-orange-300"><i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> กำลังให้ AI วิเคราะห์ราคาตลาดและเหตุผลการบวก...</div>');
+    if (window.lucide) lucide.createIcons();
+    var compact = {
+      project: st.projectName,
+      client: st.clientName,
+      supplier_total: st.supplierTotal,
+      profit_added: st.addTotal,
+      final_total: st.finalTotal,
+      total_margin_percent: st.margin,
+      target_profit_input: st.targetProfit,
+      category_summary: st.categories.map(function(c){
+        var b = TH_MARKET_BENCHMARKS[c.category] || TH_MARKET_BENCHMARKS.Other;
+        return { category:c.category, items:c.count, supplier_total:c.supplier, added_profit:c.add, final_total:c.final, margin_percent:c.margin, approximate_thailand_markup_benchmark:b.range };
+      }),
+      highest_added_items: st.topItems
+    };
+    try {
+      var response = await fetch('https://api.anthropic.com/v1/messages', {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'x-api-key':key, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
+        body: JSON.stringify({
+          model:'claude-sonnet-4-6',
+          max_tokens:1100,
+          system:'คุณคือผู้ช่วยประเมินราคา BOQ สำหรับธุรกิจออกแบบ ผลิต ติดตั้ง และงาน display/interior ในประเทศไทย ตอบเป็นภาษาไทย กระชับ เข้าใจง่าย และใช้ตัวเลขจาก BOQ ที่ให้มาเท่านั้น ห้ามอ้างว่าเป็นราคา real-time ถ้าไม่มีแหล่งข้อมูลจริง ให้ใช้คำว่า benchmark ตลาดโดยประมาณหรือช่วง markup โดยประมาณ ถ้ารายการใดข้อมูลไม่พอให้บอกว่าควรขอใบเสนอราคาหรือเทียบ supplier เพิ่ม',
+          messages:[{ role:'user', content:'วิเคราะห์ BOQ นี้และสรุปเป็นข้อความสั้นสำหรับแสดงในแผง Reason by AI\n\nข้อมูล BOQ:\n' + JSON.stringify(compact, null, 2) + '\n\nรูปแบบคำตอบที่ต้องการ:\n1) สรุปภาพรวม 2-3 bullet\n2) Market benchmark ตามหมวด BOQ ที่พบจริงในใบ Supplier เท่านั้น พร้อมช่วง % โดยประมาณ\n3) ทำไมเพิ่มราคา: ระบุว่าหมวดไหนเพิ่มเท่าไหร่และเหตุผล\n4) จุดที่ควรเช็คราคาตลาดเพิ่ม ถ้ามี\nตอบไม่เกิน 12 bullet และใช้ภาษาง่ายๆ ไม่ต้อง markdown table' }]
+        })
+      });
+      var data = await response.json().catch(function(){ return {}; });
+      if (!response.ok || data.error) throw new Error((data.error && data.error.message) || ('HTTP ' + response.status));
+      var reply = ((data.content || []).map(function(c){ return c.text || ''; }).join('\n')).trim();
+      if (!reply) reply = 'AI ไม่ได้ส่งข้อความกลับมา ลองกดวิเคราะห์อีกครั้ง';
+      _boqAI.reasonSummary = reply;
+      setReasonBox(textToReasonHtml(reply));
+    } catch(e) {
+      var msg = (e && e.message) ? e.message : 'unknown error';
+      setReasonBox('<div class="rounded-xl bg-red-950/40 border border-red-800 p-3 text-xs text-red-200 leading-6">AI วิเคราะห์ไม่สำเร็จ: ' + reasonEsc(msg) + '</div><div class="mt-3">' + buildLocalReasonPreview() + '</div>');
+    }
+  };
+  window.copyBOQReasonSummary = function() {
+    var text = (_boqAI && _boqAI.reasonSummary) ? _boqAI.reasonSummary : (document.getElementById('boq-reason-box') || {}).innerText || '';
+    if (!text) return;
+    try { navigator.clipboard.writeText(text); showToast('Copy Reason แล้ว'); }
+    catch(e) { showToast('Copy ไม่สำเร็จ', 'error'); }
+  };
+  window.resetBOQReasonSummary = function() {
+    if (_boqAI) _boqAI.reasonSummary = '';
+    setReasonBox(buildLocalReasonPreview());
+  };
+  window.refreshBOQReasonSummary = function() {
+    if (_boqAI && !_boqAI.reasonSummary) setReasonBox(buildLocalReasonPreview());
+  };
+})();
+/* ===== END BOQ REASON API PATCH ===== */
+
+
+/* ===== BOQ CONSTRUCTION CATEGORY UX PATCH ===== */
+(function(){
+  function catEsc(v){ return (typeof esc === 'function') ? esc(v) : String(v == null ? '' : v).replace(/[&<>\"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c];}); }
+  function catFmt(n){ return (typeof fmt === 'function') ? fmt(n || 0) : Number(n || 0).toLocaleString('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+  function catShort(cat){ return (typeof getBOQCategoryShortLabel === 'function') ? getBOQCategoryShortLabel(cat) : ((typeof getBOQCategoryLabel === 'function') ? getBOQCategoryLabel(cat) : (cat || 'Other')); }
+  function catFull(cat){ return (typeof getBOQCategoryLabel === 'function') ? getBOQCategoryLabel(cat) : (cat || 'Other'); }
+  function normalizeAllBOQCategories(){
+    if (!_boqAI || !_boqAI.items) return;
+    _boqAI.items.forEach(function(r){ r.category = guessBOQCategory(r.category || r.item || r.description || 'Other'); });
+  }
+  var _oldProcessBOQFileForCategories = window.processBOQFile || processBOQFile;
+  if (typeof _oldProcessBOQFileForCategories === 'function') {
+    processBOQFile = async function(file){
+      var res = await _oldProcessBOQFileForCategories.apply(this, arguments);
+      normalizeAllBOQCategories();
+      if (_boqAI && _boqAI.stage === 'pricing') renderBOQAiPanel();
+      return res;
+    };
+  }
+
+  var _oldRenderBOQPricingStepForCategories = renderBOQPricingStep;
+  renderBOQPricingStep = function(supplierTotal, finalTotal, profit, margin){
+    normalizeAllBOQCategories();
+    var html = _oldRenderBOQPricingStepForCategories.apply(this, arguments);
+    if (!_boqAI || !_boqAI.items || !_boqAI.items.length) return html;
+
+    var items = _boqAI.items || [];
+    var cats = getBOQCategoryOrder(items);
+    var groupedRows = cats.map(function(cat){
+      var groupItems = items.map(function(r,idx){ return { r:r, idx:idx }; }).filter(function(o){ return (o.r.category || 'Other') === cat; });
+      if (!groupItems.length) return '';
+      var subtotalSupplier = groupItems.reduce(function(s,o){ return s + (Number(o.r.supplierTotal)||0); },0);
+      var subtotalAdd = groupItems.reduce(function(s,o){ return s + (Number(o.r.add)||0); },0);
+      var subtotalFinal = groupItems.reduce(function(s,o){ return s + (Number(o.r.final)||Number(o.r.supplierTotal)||0); },0);
+      var color = BOQ_CAT_COLOR[cat] || '#888';
+      var header = '<tr class="boq-cat-header" style="background:rgba(15,23,42,.85)">' +
+        '<td colspan="7" class="px-3 py-2 border-y border-slate-700">' +
+          '<div class="flex flex-wrap items-center justify-between gap-2">' +
+            '<div class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full" style="background:'+color+'"></span><span class="text-xs font-semibold text-white">'+catEsc(catFull(cat))+'</span><span class="text-[10px] text-slate-500">'+groupItems.length+' รายการ</span></div>' +
+            '<div class="text-[10px] text-slate-500">Supplier <span class="mono text-slate-200">'+catFmt(subtotalSupplier)+'</span> · Add <span class="mono text-orange-300">+'+catFmt(subtotalAdd)+'</span> · Final <span class="mono text-emerald-300">'+catFmt(subtotalFinal)+'</span></div>' +
+          '</div>' +
+        '</td></tr>';
+      var rows = groupItems.map(function(o){
+        var r = o.r, i = o.idx;
+        var catColor = BOQ_CAT_COLOR[r.category] || '#888';
+        return '<tr class="border-b border-slate-800">' +
+          '<td class="py-2 pr-2 text-slate-500 text-xs px-3">' + (i+1) + '</td>' +
+          '<td class="py-2 pr-2"><div class="text-xs text-white leading-5">' + catEsc(r.item || '-') + '</div><div class="text-[10px] text-slate-500">' + catEsc(r.qty || 0) + ' ' + catEsc(r.unit || '') + ' × ' + catFmt(r.supplierUnit || 0) + '</div></td>' +
+          '<td class="py-2 pr-2"><span class="px-2 py-0.5 rounded-full text-[10px] whitespace-nowrap" style="background:' + catColor + '22;color:' + catColor + '">' + catEsc(catShort(r.category || 'Other')) + '</span></td>' +
+          '<td class="py-2 pr-2 text-right mono text-xs text-slate-300">' + catFmt(r.supplierTotal || 0) + '</td>' +
+          '<td class="py-2 pr-2"><input id="boq-add-' + i + '" type="text" inputmode="decimal" value="' + catFmt(r.add || 0) + '" class="w-24 px-2 py-1 bg-slate-900 border border-slate-700 rounded text-xs mono text-right text-orange-300 focus:border-orange-500 focus:outline-none" onfocus="this.select()" oninput="boqManualAddInput(' + i + ',this);setTimeout(function(){ if(window.refreshBOQSummaryUI) refreshBOQSummaryUI(); if(window.refreshBOQReasonSummary) refreshBOQReasonSummary(); },0)"></td>' +
+          '<td class="py-2 pr-2 text-right mono text-xs font-semibold text-emerald-400" id="boq-final-' + i + '">' + catFmt(r.final || r.supplierTotal || 0) + '</td>' +
+          '<td class="py-2 px-3 text-right"><div class="flex justify-end gap-1"><button class="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-[11px] text-slate-200" onclick="boqOpenItemEditor(' + i + ')">Edit</button><button class="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-[11px] text-slate-400" onclick="boqDuplicateRow(' + i + ')">Copy</button><button class="px-2 py-1 bg-red-900/40 hover:bg-red-900 rounded-lg text-[11px] text-red-300" onclick="boqDeleteRow(' + i + ')">Del</button></div></td>' +
+        '</tr>';
+      }).join('');
+      return header + rows;
+    }).join('');
+    html = html.replace(/<tbody id="boq-items-body">[\s\S]*?<\/tbody>/, '<tbody id="boq-items-body">' + groupedRows + '</tbody>');
+    html = html.replace('BOQ Pricing Table', 'BOQ Pricing Table แยกตามหมวดงาน');
+    html = html.replace('มีราคาก่อนบวก + Add + Final และปรับ manual ได้ทุกแถว', 'แสดงเฉพาะหมวดที่พบจริงในใบ Supplier เท่านั้น และปรับ manual ได้ทุกแถว');
+    html = html.replace('แก้หมวด รายการ จำนวน ราคาทุน Add และ Final ได้เอง', 'แก้หมวด รายการ จำนวน ราคาทุน Add และ Final ได้เอง โดยหมวดที่ไม่มีในใบ Supplier จะไม่ถูกสร้างขึ้น');
+    return html;
+  };
+
+  var _oldBuildBOQSummaryItemsForCategories = buildBOQSummaryItems;
+  buildBOQSummaryItems = function(items){
+    (items || []).forEach(function(r){ r.category = guessBOQCategory(r.category || r.item || r.description || 'Other'); });
+    return _oldBuildBOQSummaryItemsForCategories(items);
+  };
+
+  var _oldRunBOQAIForCategories = runBOQAI;
+  runBOQAI = function(){
+    normalizeAllBOQCategories();
+    return _oldRunBOQAIForCategories.apply(this, arguments);
+  };
+})();
+/* ===== END BOQ CONSTRUCTION CATEGORY UX PATCH ===== */
+
+
+/* ===== BOQ DELETE + MARKET PRICE REASON PATCH V2 ===== */
+(function(){
+  function qEsc(v){
+    return String(v == null ? '' : v).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+  function qNum(v){ v = Number(v || 0); return isFinite(v) ? v : 0; }
+  function qRound(v){ return Math.round((qNum(v) + Number.EPSILON) * 100) / 100; }
+  function qFmt(v){
+    try { return qRound(v).toLocaleString('en-US', { minimumFractionDigits:2, maximumFractionDigits:2 }); }
+    catch(e){ return String(qRound(v)); }
+  }
+  function qPct(add, base){ return base ? qRound((qNum(add) / qNum(base)) * 100) : 0; }
+  function qCatLabel(cat){
+    if (typeof catFull === 'function') return catFull(cat || 'Other');
+    return cat || 'Other';
+  }
+  function getBenchmarkCatalog(){
+    return [
+      { key:'steel', label:'เหล็ก / Steel', unit:'kg / m / งานผลิต', range:'เหล็กกล่อง/แผ่น/โครง: ประมาณ 45–95 บาท/กก. เฉพาะวัสดุ, งานเชื่อม/ประกอบมักคิดเพิ่มตามความยาก', note:'ถ้ามีงานทำสี พ่นสี ตัดเชื่อม หรือขึ้นรูป ควรมีค่าแรงและ wastage แยกจากค่าวัสดุ' },
+      { key:'wood', label:'ไม้ / MDF / Plywood', unit:'sheet / sqm', range:'ไม้อัด/MDF/Melamine board ทั่วไปประมาณ 700–2,200 บาท/แผ่น ขึ้นกับความหนาและเกรด, งาน built-in คิดรวมค่าแรงสูงกว่า', note:'ถ้าเป็นงานเฟอร์นิเจอร์หรือ built-in ไม่ควรเทียบแค่แผ่นไม้ ต้องรวม edge, hardware, สี/ผิว, ค่าแรงและติดตั้ง' },
+      { key:'laminate', label:'Laminate / ผิวปิด', unit:'sqm / sheet', range:'ลามิเนต/ผิวปิดตกแต่งโดยประมาณ 450–1,800 บาท/ตร.ม. หรือสูงกว่าสำหรับเกรดพิเศษ', note:'งาน laminate มีค่าแรงปิดผิวและความเสี่ยงงานเก็บขอบ จึงมักบวกเพิ่มได้มากกว่าวัสดุดิบ' },
+      { key:'acrylic', label:'Acrylic / อะคริลิก', unit:'sqm / piece', range:'อะคริลิก 3–10 mm โดยประมาณ 800–4,500 บาท/ตร.ม. ยังไม่รวมตัด CNC, ดัด, เจาะ, พ่นสี หรือไฟ', note:'ถ้ามีไฟ โลโก้ หรืองานไดคัท ราคาควรสูงกว่าวัสดุแผ่นเปล่า' },
+      { key:'glass', label:'Glass / กระจก', unit:'sqm', range:'กระจกใส/เทมเปอร์โดยประมาณ 900–3,500 บาท/ตร.ม. ขึ้นกับความหนา เจียรขอบ ฟิล์ม และ hardware', note:'กระจกควรเผื่อค่าขนส่ง ยกติดตั้ง แตกหัก และความปลอดภัย' },
+      { key:'electrical', label:'Electrical / ระบบไฟ', unit:'point / m / set', range:'จุดไฟ-ปลั๊กพื้นฐานประมาณ 450–1,500 บาท/จุด, LED strip ประมาณ 250–1,200 บาท/เมตร ขึ้นกับ spec', note:'งานไฟต้องรวมสายไฟ ท่อ อุปกรณ์ driver/adapter การทดสอบ และความรับผิดชอบหน้างาน' },
+      { key:'lighting', label:'Lighting fixture / โคมไฟ', unit:'set', range:'โคมทั่วไปมีช่วงกว้างมาก ประมาณหลักร้อยถึงหลายพันบาท/ชุด ขึ้นกับแบรนด์ CRI วัตต์ และดีไซน์', note:'ถ้า BOQ ใช้ชื่อรุ่นไม่ชัด ควรเช็คราคาจาก supplier เพิ่มก่อน confirm' },
+      { key:'print', label:'Print / Vinyl / Graphic', unit:'sqm', range:'สติ๊กเกอร์/ไวนิล/พิมพ์งานกราฟิกโดยประมาณ 250–1,200 บาท/ตร.ม. ขึ้นกับวัสดุ หมึก และเคลือบ', note:'งาน print มีค่า artwork, proof, ติดตั้ง และความเสี่ยงงานแก้สี/แก้ขนาด' },
+      { key:'paint', label:'Paint / Surface finish', unit:'sqm', range:'งานสีพื้นฐานประมาณ 80–350 บาท/ตร.ม. รวมวัสดุและแรงงานแบบทั่วไป งานพ่นสี/สีพิเศษสูงกว่า', note:'งานสีและผิวจบควรเผื่อโป๊ว ขัด รองพื้น เก็บงาน และจำนวนเที่ยวสี' },
+      { key:'labor_general', label:'ค่าแรงทั่วไป', unit:'man-day', range:'แรงงานทั่วไปประมาณ 500–900 บาท/คน/วัน, ช่างฝีมือประมาณ 900–1,800 บาท/คน/วัน', note:'ค่าแรงควรคิดรวมเวลาเตรียมงาน รอหน้างาน เก็บงาน และเดินทาง' },
+      { key:'labor_specialist', label:'ช่างเฉพาะทาง / Specialist', unit:'man-day / job', range:'ช่างไม้ ช่างเชื่อม ช่างไฟ หรือช่างติดตั้งเฉพาะทางโดยประมาณ 900–2,500 บาท/คน/วัน หรือคิดเป็นงานเหมา', note:'งานที่ต้องรับผิดชอบความเรียบร้อยหรือความปลอดภัยควรมี margin สูงกว่างานวัสดุซื้อมาขายไป' },
+      { key:'transport', label:'ขนส่ง / เดินทาง / Site', unit:'trip / job', range:'ขนส่งในเมืองหรือรถกระบะ/รถ 4 ล้อเริ่มประมาณ 1,500–6,000 บาท/เที่ยว, ต่างจังหวัดขึ้นกับระยะทางและขนาดรถ', note:'ควรคิดรวมค่ายกของ ค่าที่พัก ค่าอาหาร ค่า OT และค่าเสียเวลาหน้างานถ้ามี' },
+      { key:'management', label:'บริหารงาน / ควบคุมงาน', unit:'job / day', range:'ค่าคุมงาน/ประสานงานมักคิดเป็น % ของงานหรือคิดรายวัน ประมาณ 1,500–5,000 บาท/วันตาม seniority', note:'งานที่ต้องประสาน supplier หลายรายและรับความเสี่ยงควรแยกค่า management ไม่ให้ซ่อนทั้งหมดในวัสดุ' }
+    ];
+  }
+  function detectBenchmarks(item){
+    var t = String((item && (item.item || item.description)) || '').toLowerCase();
+    var hit = [];
+    function add(k){ if (hit.indexOf(k) < 0) hit.push(k); }
+    if (/steel|iron|เหล็ก|metal|h[- ]?beam|pipe|tube|เฟรม|โครง/.test(t)) add('steel');
+    if (/wood|ไม้|mdf|plywood|melamine|particle|ไม้อัด|บอร์ด|board|cabinet|cashier|counter|built|เฟอร์|ตู้|ชั้น/.test(t)) add('wood');
+    if (/laminate|ลามิเนต|hpl|ผิว/.test(t)) add('laminate');
+    if (/acrylic|อะคริล|ไดคัท|logo/.test(t)) add('acrylic');
+    if (/glass|กระจก|mirror/.test(t)) add('glass');
+    if (/electric|ไฟฟ้า|สายไฟ|ปลั๊ก|switch|db|mdb|wire|wiring|emt|conduit|ท่อ emt/.test(t)) add('electrical');
+    if (/led|light|โคม|ดาวน์ไลท์|tracklight|4000k|bulb|ไฟ/.test(t)) add('lighting');
+    if (/print|vinyl|graphic|sticker|สติ๊กเกอร์|ไวนิล|ป้าย|ปริ้น|พิมพ์/.test(t)) add('print');
+    if (/paint|สี|พ่น|ทำสี|finish|surface/.test(t)) add('paint');
+    if (/install|ติดตั้ง|setup|ประกอบ|ค่าแรง|labou?r|ช่าง|service/.test(t)) { add('labor_general'); add('labor_specialist'); }
+    if (/ขนส่ง|เดินทาง|transport|delivery|logistic|รถ|ที่พัก|hotel|travel/.test(t)) add('transport');
+    if (/design|management|coordination|ควบคุม|ประสาน|บริหาร|supervisor|pm/.test(t)) add('management');
+    if (!hit.length) {
+      var cat = String((item && item.category) || '').toLowerCase();
+      if (/electrical|ไฟ/.test(cat)) { add('electrical'); add('lighting'); }
+      else if (/furniture|architectural|material|สถาปัต|เฟอร์/.test(cat)) { add('wood'); add('labor_specialist'); }
+      else if (/installation|labou?r|ติดตั้ง/.test(cat)) { add('labor_general'); add('labor_specialist'); }
+      else if (/prelim|general|other|เตรียม/.test(cat)) { add('transport'); add('management'); }
+    }
+    return hit.slice(0,4);
+  }
+  function getReasonStatsV2(){
+    var items = (_boqAI && _boqAI.items) ? _boqAI.items : [];
+    var totalSupplier = 0, totalAdd = 0, totalFinal = 0;
+    var cats = {}, mat = {}, catalog = getBenchmarkCatalog();
+    var byKey = {}; catalog.forEach(function(b){ byKey[b.key] = b; });
+    items.forEach(function(r){
+      var cat = r.category || 'Other';
+      var supplier = qNum(r.supplierTotal);
+      var add = qNum(r.add);
+      var finalVal = qNum(r.final || supplier + add || supplier);
+      totalSupplier += supplier; totalAdd += add; totalFinal += finalVal;
+      cats[cat] = cats[cat] || { category:cat, supplier:0, add:0, final:0, count:0, examples:[] };
+      cats[cat].supplier += supplier; cats[cat].add += add; cats[cat].final += finalVal; cats[cat].count += 1;
+      cats[cat].examples.push({ item:r.item || '-', supplier:supplier, add:add, final:finalVal, margin:qPct(add,supplier), qty:r.qty || 0, unit:r.unit || '' });
+      detectBenchmarks(r).forEach(function(k){
+        var b = byKey[k] || { label:k, range:'-', note:'' };
+        mat[k] = mat[k] || { key:k, label:b.label, range:b.range, note:b.note, supplier:0, add:0, final:0, count:0, items:[] };
+        mat[k].supplier += supplier; mat[k].add += add; mat[k].final += finalVal; mat[k].count += 1;
+        mat[k].items.push(r.item || '-');
+      });
+    });
+    Object.keys(cats).forEach(function(cat){
+      cats[cat].supplier = qRound(cats[cat].supplier); cats[cat].add = qRound(cats[cat].add); cats[cat].final = qRound(cats[cat].final);
+      cats[cat].margin = qPct(cats[cat].add, cats[cat].supplier);
+      cats[cat].examples = cats[cat].examples.sort(function(a,b){ return qNum(b.add) - qNum(a.add); }).slice(0,3);
+    });
+    Object.keys(mat).forEach(function(k){
+      mat[k].supplier = qRound(mat[k].supplier); mat[k].add = qRound(mat[k].add); mat[k].final = qRound(mat[k].final); mat[k].margin = qPct(mat[k].add, mat[k].supplier);
+      mat[k].items = mat[k].items.slice(0,4);
+    });
+    return {
+      projectName: (_boqAI && _boqAI.projectName) || '-', clientName: (_boqAI && _boqAI.clientName) || '-', targetProfit: (_boqAI && _boqAI.targetProfit) || '',
+      supplierTotal:qRound(totalSupplier), addTotal:qRound(totalAdd), finalTotal:qRound(totalFinal), margin:qPct(totalAdd,totalSupplier),
+      categories:Object.keys(cats).map(function(k){ return cats[k]; }).sort(function(a,b){ return qNum(b.add)-qNum(a.add); }),
+      materials:Object.keys(mat).map(function(k){ return mat[k]; }).sort(function(a,b){ return qNum(b.add)-qNum(a.add); }),
+      topItems:items.map(function(r){
+        var supplier = qNum(r.supplierTotal), add = qNum(r.add), finalVal = qNum(r.final || supplier + add || supplier);
+        return { item:r.item || '-', category:r.category || 'Other', supplier:supplier, add:add, final:finalVal, margin:qPct(add,supplier), qty:r.qty||0, unit:r.unit||'', benchmark_keys:detectBenchmarks(r) };
+      }).sort(function(a,b){ return qNum(b.add)-qNum(a.add); }).slice(0,10)
+    };
+  }
+  window.buildBOQMarketReasonPreviewV2 = function(){
+    var st = getReasonStatsV2();
+    if (!st.categories.length) return '<div class="text-xs text-slate-500 leading-6">ยังไม่มีรายการ BOQ ให้สรุป Reason</div>';
+    var catRows = st.categories.slice(0,5).map(function(c){
+      return '<div class="rounded-xl bg-slate-900/70 border border-slate-800 p-3">' +
+        '<div class="flex justify-between gap-3"><div><div class="text-xs font-semibold text-white">' + qEsc(qCatLabel(c.category)) + '</div><div class="text-[10px] text-slate-500">' + c.count + ' รายการ</div></div>' +
+        '<div class="text-right"><div class="mono text-xs text-orange-300">+' + qFmt(c.add) + '</div><div class="text-[10px] text-slate-500">' + c.margin + '%</div></div></div>' +
+        '<div class="grid grid-cols-3 gap-2 mt-2 text-[10px]"><div class="text-slate-500">ทุน<br><span class="mono text-slate-200">' + qFmt(c.supplier) + '</span></div><div class="text-slate-500">เพิ่ม<br><span class="mono text-orange-300">+' + qFmt(c.add) + '</span></div><div class="text-slate-500">ขาย<br><span class="mono text-emerald-300">' + qFmt(c.final) + '</span></div></div>' +
+      '</div>';
+    }).join('');
+    var matRows = st.materials.slice(0,6).map(function(m){
+      return '<div class="rounded-xl bg-slate-950/80 border border-slate-800 p-3">' +
+        '<div class="flex justify-between gap-3"><div><div class="text-xs font-semibold text-white">' + qEsc(m.label) + '</div><div class="text-[10px] text-slate-500 mt-1 leading-5">' + qEsc(m.range) + '</div></div><div class="text-right flex-shrink-0"><div class="mono text-xs text-orange-300">+' + qFmt(m.add) + '</div><div class="text-[10px] text-slate-500">' + m.count + ' รายการ</div></div></div>' +
+        '<div class="text-[11px] text-slate-400 leading-5 mt-2">' + qEsc(m.note) + '</div>' +
+      '</div>';
+    }).join('');
+    if (!matRows) matRows = '<div class="text-xs text-slate-500 leading-6">ยังไม่พบ keyword วัสดุ/ค่าแรงชัดเจน กดวิเคราะห์ด้วย API เพื่อให้ AI ช่วยอ่านจากชื่อรายการอีกครั้ง</div>';
+    return '<div class="space-y-3">' +
+      '<div class="rounded-xl bg-orange-950/20 border border-orange-500/20 p-3 text-xs leading-6 text-orange-100">' +
+        '<b>สรุปเร็ว:</b> ทุนรวม <span class="mono">' + qFmt(st.supplierTotal) + '</span> · บวกเพิ่ม <span class="mono">+' + qFmt(st.addTotal) + '</span> · ราคาขาย <span class="mono">' + qFmt(st.finalTotal) + '</span> · margin รวม <span class="mono">' + st.margin + '%</span>' +
+      '</div>' +
+      '<div><div class="text-[11px] font-semibold text-slate-300 mb-2">Market benchmark จาก keyword ที่พบ</div><div class="space-y-2">' + matRows + '</div></div>' +
+      '<div><div class="text-[11px] font-semibold text-slate-300 mb-2">สรุปตามหมวด BOQ</div><div class="space-y-2">' + catRows + '</div></div>' +
+      '<div class="text-[10px] text-slate-600 leading-5">Benchmark นี้เป็นช่วงตั้งต้นสำหรับช่วยตัดสินใจ ไม่ใช่ราคา real-time จาก supplier จริง กด “วิเคราะห์ด้วย API + ราคาตลาด” เพื่อให้ AI สรุปเหตุผลเป็นภาษาคนอ่านง่ายขึ้น</div>' +
+    '</div>';
+  };
+
+  var oldShowConfirm = window.showConfirm || showConfirm;
+  window.showConfirm = showConfirm = function(msg, onYes){
+    var d = document.getElementById('confirm-dialog');
+    if (!d) {
+      if (window.confirm(String(msg || 'ยืนยัน?'))) onYes && onYes();
+      return;
+    }
+    d.style.zIndex = '100002';
+    d.style.display = 'flex';
+    d.innerHTML = '<div class="bg-slate-800 rounded-xl p-6 max-w-sm border border-slate-700 fade-in shadow-2xl">' +
+      '<p class="text-slate-200 mb-4 whitespace-pre-line">' + qEsc(msg) + '</p>' +
+      '<div class="flex gap-3 justify-end">' +
+      '<button class="px-4 py-2 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600 text-sm" id="confirm-no">ยกเลิก</button>' +
+      '<button class="px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-500 text-sm" id="confirm-yes">ลบรายการ</button>' +
+      '</div></div>';
+    d.querySelector('#confirm-no').onclick = function(){ d.style.display = 'none'; };
+    d.querySelector('#confirm-yes').onclick = function(){ d.style.display = 'none'; if (onYes) onYes(); };
+  };
+
+  window.boqDeleteRow = function(index){
+    if (!_boqAI || !_boqAI.items || !_boqAI.items[index]) return;
+    var itemName = _boqAI.items[index].item || ('รายการที่ ' + (index + 1));
+    showConfirm('ลบรายการ BOQ นี้?\n' + itemName + '\n\nหลังลบแล้วให้กด Save เพื่ออัปเดต BOQ เดิม', function(){
+      _boqAI.items.splice(index, 1);
+      _boqAI.items.forEach(function(r,i){ r.id = i + 1; });
+      _boqAI.reasonSummary = '';
+      renderBOQAiPanel();
+      setTimeout(function(){
+        if (window.refreshBOQSummaryUI) refreshBOQSummaryUI();
+        var box = document.getElementById('boq-reason-box');
+        if (box && window.buildBOQMarketReasonPreviewV2) box.innerHTML = window.buildBOQMarketReasonPreviewV2();
+      }, 0);
+      showToast('ลบรายการ BOQ แล้ว อย่าลืมกด Save เพื่อบันทึก', 'success');
+    });
+  };
+
+  var prevRenderForMarketPatch = renderBOQPricingStep;
+  renderBOQPricingStep = function(){
+    var html = prevRenderForMarketPatch.apply(this, arguments);
+    try {
+      var wrap = document.createElement('div');
+      wrap.innerHTML = html;
+      var box = wrap.querySelector('#boq-reason-box');
+      if (box) box.innerHTML = window.buildBOQMarketReasonPreviewV2();
+      var title = wrap.querySelector('.text-sm.font-semibold.text-white.flex.items-center.gap-2');
+      if (title && /Reason by AI/.test(title.textContent || '')) title.innerHTML = '<i data-lucide="brain-circuit" class="w-4 h-4 text-orange-400"></i> Reason by AI + Market Price';
+      var buttons = wrap.querySelectorAll('button');
+      buttons.forEach(function(btn){
+        if ((btn.textContent || '').indexOf('วิเคราะห์ด้วย API') >= 0) btn.textContent = 'วิเคราะห์ด้วย API + ราคาตลาด';
+      });
+      return wrap.innerHTML;
+    } catch(e){ return html; }
+  };
+
+  window.refreshBOQReasonSummary = function(){
+    if (_boqAI) _boqAI.reasonSummary = '';
+    var box = document.getElementById('boq-reason-box');
+    if (box && window.buildBOQMarketReasonPreviewV2) box.innerHTML = window.buildBOQMarketReasonPreviewV2();
+  };
+  window.resetBOQReasonSummary = function(){
+    if (_boqAI) _boqAI.reasonSummary = '';
+    var box = document.getElementById('boq-reason-box');
+    if (box && window.buildBOQMarketReasonPreviewV2) box.innerHTML = window.buildBOQMarketReasonPreviewV2();
+  };
+  window.generateBOQMarketReason = async function(){
+    if (!_boqAI) return;
+    var key = sanitizeBOQApiKey((_boqAI && _boqAI.apiKey) || localStorage.getItem('dsr_api_key') || '');
+    var err = validateBOQApiKeyValue(key);
+    var box = document.getElementById('boq-reason-box');
+    function setBox(html){ if (box) box.innerHTML = html; }
+    if (err) { setBox('<div class="rounded-xl bg-red-950/40 border border-red-800 p-3 text-xs text-red-200 leading-6">' + qEsc(err) + '</div>'); return; }
+    _boqAI.apiKey = key;
+    localStorage.setItem('dsr_api_key', key);
+    var st = getReasonStatsV2();
+    setBox('<div class="flex items-center gap-2 text-xs text-orange-300"><i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> กำลังให้ AI วิเคราะห์ราคาตลาด วัสดุ ค่าแรง และเหตุผลการบวก...</div>');
+    if (window.lucide) lucide.createIcons();
+    var catalog = getBenchmarkCatalog();
+    var compact = {
+      project: st.projectName,
+      client: st.clientName,
+      supplier_total: st.supplierTotal,
+      profit_added: st.addTotal,
+      final_total: st.finalTotal,
+      total_margin_percent: st.margin,
+      target_profit_input: st.targetProfit,
+      category_summary: st.categories.map(function(c){ return { category:qCatLabel(c.category), raw_category:c.category, items:c.count, supplier_total:c.supplier, added_profit:c.add, final_total:c.final, margin_percent:c.margin, example_items:c.examples }; }),
+      detected_market_benchmarks: st.materials,
+      highest_added_items: st.topItems,
+      benchmark_catalog_for_reference: catalog
+    };
+    try {
+      var response = await fetch('https://api.anthropic.com/v1/messages', {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'x-api-key':key, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
+        body: JSON.stringify({
+          model:'claude-sonnet-4-6',
+          max_tokens:1500,
+          system:'คุณคือ QS/Estimator สำหรับงานออกแบบ ผลิต ติดตั้ง display/interior/construction ในประเทศไทย ตอบภาษาไทยแบบสั้น ชัด เข้าใจง่าย ใช้ตัวเลข BOQ ที่ให้มาเป็นหลัก และใช้ benchmark_catalog_for_reference เป็นช่วงราคาตลาดโดยประมาณเท่านั้น ห้ามพูดว่าเป็นราคา real-time หรือราคากลางราชการ ถ้าข้อมูลไม่พอให้บอกว่าควรเช็คราคาจาก supplier เพิ่ม',
+          messages:[{ role:'user', content:'ช่วยวิเคราะห์ BOQ นี้ให้เป็น Reason by AI สำหรับเจ้าของงาน/ทีมขาย\n\nข้อมูล BOQ และ benchmark:\n' + JSON.stringify(compact, null, 2) + '\n\nรูปแบบคำตอบที่ต้องการ:\n- สรุปภาพรวม 2 bullet: ทุนรวม บวกเพิ่ม ราคาขาย margin\n- ระบุราคาตลาดโดยประมาณที่เกี่ยวข้องจริงจากชื่อรายการ เช่น เหล็ก/ไม้/ลามิเนต/อะคริลิก/กระจก/LED/งานไฟ/ค่าแรง/ขนส่ง ว่าช่วงตลาดประมาณเท่าไหร่ต่อหน่วย และรายการใน BOQ นี้ดูถูก/ปกติ/แพงอย่างไร\n- อธิบายว่าทำไมเพิ่มราคาตรงไหนเท่าไหร่ แยกตามหมวด BOQ ที่พบจริง\n- ระบุจุดที่ควรเช็คราคาเพิ่ม เช่น ชื่อรุ่นไม่ชัด, unit ไม่ตรงกับตลาด, งานติดตั้งเสี่ยง, งานผลิต custom\n- ไม่เกิน 14 bullet ใช้ภาษาง่ายๆ ไม่มี markdown table และอย่าใส่หมวดที่ไม่มีในใบ Supplier' }]
+        })
+      });
+      var data = await response.json().catch(function(){ return {}; });
+      if (!response.ok || data.error) throw new Error((data.error && data.error.message) || ('HTTP ' + response.status));
+      var reply = ((data.content || []).map(function(c){ return c.text || ''; }).join('\n')).trim();
+      if (!reply) reply = 'AI ไม่ได้ส่งข้อความกลับมา ลองกดวิเคราะห์อีกครั้ง';
+      _boqAI.reasonSummary = reply;
+      setBox('<div class="text-xs leading-6 text-slate-200 whitespace-pre-line">' + qEsc(reply) + '</div>');
+    } catch(e) {
+      var msg = (e && e.message) ? e.message : 'unknown error';
+      setBox('<div class="rounded-xl bg-red-950/40 border border-red-800 p-3 text-xs text-red-200 leading-6">AI วิเคราะห์ไม่สำเร็จ: ' + qEsc(msg) + '</div><div class="mt-3">' + window.buildBOQMarketReasonPreviewV2() + '</div>');
+    }
+  };
+})();
+/* ===== END BOQ DELETE + MARKET PRICE REASON PATCH V2 ===== */
+
+
+
+/* ===== BOQ SUPPLIER CATEGORY + SYNC BADGE PATCH ===== */
+(function(){
+  function sEsc(v){
+    if (typeof esc === 'function') return esc(v);
+    return String(v == null ? '' : v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});
+  }
+  function sFmt(n){
+    if (typeof fmt === 'function') return fmt(n || 0);
+    return Number(n || 0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  }
+  function sRound(n){ return (typeof roundHU === 'function') ? roundHU(n || 0) : Math.round((Number(n||0)+Number.EPSILON)*100)/100; }
+  function sParseMoney(v){ return (typeof boqParseMoney === 'function') ? boqParseMoney(v) : (parseFloat(String(v == null ? '' : v).replace(/,/g,'')) || 0); }
+  function sProject(projId){ return allData.find(function(r){ return r.record_type === 'project' && r.project_id === projId; }); }
+  function sStats(items){
+    var supplier = 0, finalTotal = 0;
+    (items || []).forEach(function(r){ supplier += Number(r.supplierTotal||0); finalTotal += Number(r.final||r.supplierTotal||0); });
+    supplier = sRound(supplier); finalTotal = sRound(finalTotal);
+    var profit = sRound(finalTotal - supplier);
+    var margin = supplier > 0 ? ((profit / supplier) * 100) : 0;
+    return { supplierTotal:supplier, finalTotal:finalTotal, profit:profit, margin: Math.round((margin + Number.EPSILON) * 100) / 100 };
+  }
+  function isStandardCat(v){ return !!(BOQ_AI_MARGINS && BOQ_AI_MARGINS[v]); }
+  function cleanSupplierCategory(v, fallback){
+    var raw = String(v == null ? '' : v).replace(/\s+/g,' ').trim();
+    raw = raw.replace(/^(category|cat|section|type|group|หมวด)\s*[:：\-–]\s*/i,'').trim();
+    if (raw && raw !== '-' && raw.toLowerCase() !== 'nan' && raw.toLowerCase() !== 'null' && raw.toLowerCase() !== 'undefined') return raw;
+    var fb = String(fallback || '').trim();
+    if (fb) return guessBOQCategory ? getBOQCategoryShortLabel(guessBOQCategory(fb)) : 'Uncategorized';
+    return 'Uncategorized / ไม่ระบุหมวด';
+  }
+  function catColor(cat){
+    if (BOQ_CAT_COLOR && BOQ_CAT_COLOR[cat]) return BOQ_CAT_COLOR[cat];
+    var palette = ['#f97316','#60a5fa','#22c55e','#facc15','#a78bfa','#38bdf8','#fb7185','#84cc16','#f59e0b','#2dd4bf','#c084fc','#94a3b8'];
+    var h = 0, str = String(cat || 'Other');
+    for (var i=0;i<str.length;i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+    return palette[Math.abs(h) % palette.length];
+  }
+  function categoriesFromItems(items){
+    var list = [];
+    (items || []).forEach(function(r){
+      var cat = cleanSupplierCategory(r && r.category, r && (r.item || r.description));
+      if (list.indexOf(cat) < 0) list.push(cat);
+    });
+    return list.length ? list : ['Uncategorized / ไม่ระบุหมวด'];
+  }
+  function normalizeSupplierCategories(items){
+    (items || []).forEach(function(r){ r.category = cleanSupplierCategory(r.category, r.item || r.description); });
+    return items || [];
+  }
+
+  // From now on, category labels/order use the supplier's own BOQ category/section names.
+  getBOQCategoryLabel = function(cat){ return cleanSupplierCategory(cat); };
+  getBOQCategoryShortLabel = function(cat){ return cleanSupplierCategory(cat); };
+  getBOQCategoryOrder = function(items){ return categoriesFromItems(items); };
+  buildBOQSummaryItems = function(items){
+    items = normalizeSupplierCategories(items || []);
+    var grouped = {};
+    items.forEach(function(r){
+      var cat = cleanSupplierCategory(r.category, r.item || r.description);
+      grouped[cat] = grouped[cat] || { total:0, count:0 };
+      grouped[cat].total += Number(r.final || r.supplierTotal || 0);
+      grouped[cat].count += 1;
+    });
+    return categoriesFromItems(items).filter(function(cat){ return grouped[cat] && grouped[cat].total > 0; }).map(function(cat){
+      return { desc: cat + ' - as per attached Supplier BOQ (' + grouped[cat].count + ' items)', qty:1, price:sRound(grouped[cat].total) };
+    });
+  };
+
+  // Make vision extraction keep supplier category headers exactly, instead of forcing construction-standard categories.
+  if (typeof extractBOQWithVision === 'function') {
+    extractBOQWithVision = async function(file) {
+      var key = sanitizeBOQApiKey((_boqAI && _boqAI.apiKey) || localStorage.getItem('dsr_api_key') || '');
+      var keyErr = validateBOQApiKeyValue(key);
+      if (keyErr) throw new Error(keyErr);
+      if (_boqAI) _boqAI.apiKey = key;
+      localStorage.setItem('dsr_api_key', key);
+      var base64 = await boqFileToBase64(file);
+      var isPdf = file.name.toLowerCase().endsWith('.pdf');
+      var mediaType = isPdf ? 'application/pdf' : (file.type || 'image/jpeg');
+      var contentBlock = isPdf ? { type:'document', source:{ type:'base64', media_type:'application/pdf', data:base64 } } : { type:'image', source:{ type:'base64', media_type:mediaType, data:base64 } };
+      var systemPrompt = 'You are a BOQ extraction AI for construction/fit-out/display/interior supplier quotations in Thailand. Extract ONLY line items that exist in the supplier file. Return ONLY raw JSON array. Each item must be {"item":"string","qty":number,"unit":"string","unitPrice":number,"total":number,"category":"string"}. IMPORTANT: category must preserve the supplier document section/category/header EXACTLY as written, for example "MATERIAL / วัสดุ", "INSTALLATION / งานติดตั้ง", "OTHER / อื่นๆ". Do not translate categories into standard construction categories. Do not create categories that are not in the supplier file. If an item has no visible category/section, use "Uncategorized / ไม่ระบุหมวด". Preserve item names. If total is missing calculate qty*unitPrice.';
+      var response = await fetch('https://api.anthropic.com/v1/messages', {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'x-api-key':key, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
+        body:JSON.stringify({ model:'claude-sonnet-4-6', max_tokens:5000, system:systemPrompt, messages:[{ role:'user', content:[ contentBlock, {type:'text', text:'Extract BOQ line items as JSON array only. Preserve supplier category/section names exactly.'} ] }] })
+      });
+      var data = await response.json();
+      if (data.error) {
+        var msg = data.error.message || 'API error';
+        if (/invalid x-api-key/i.test(msg)) msg = 'invalid x-api-key: Key ไม่ถูกต้อง/ไม่ใช่ตัวเต็ม/ถูก copy มาเป็นแบบย่อ ให้กด Create key ใหม่แล้ว copy ตัวเต็ม';
+        throw new Error(msg);
+      }
+      var text = (data.content || []).filter(function(b){ return b.type === 'text'; }).map(function(b){ return b.text; }).join('\n').trim();
+      var clean = text.replace(/```json|```/g,'').trim();
+      var start = clean.indexOf('['), end = clean.lastIndexOf(']');
+      if (start >= 0 && end >= 0) clean = clean.slice(start, end + 1);
+      var rows = JSON.parse(clean);
+      return (rows || []).map(function(r){ r.category = cleanSupplierCategory(r.category, r.item || r.description); return r; });
+    };
+  }
+
+  // Override file processing so new BOQ keeps supplier categories from Excel/PDF instead of auto-normalizing them.
+  processBOQFile = async function(file) {
+    if (!_boqAI) return;
+    var keyInput = document.getElementById('boq-api-key');
+    if (keyInput && keyInput.value) {
+      _boqAI.apiKey = sanitizeBOQApiKey(keyInput.value);
+      if (_boqAI.apiKey && !validateBOQApiKeyValue(_boqAI.apiKey)) localStorage.setItem('dsr_api_key', _boqAI.apiKey);
+    }
+    _boqAI.stage = 'extracting'; _boqAI.error = ''; _boqAI.fileName = file.name; _boqAI.fileType = (file.name.split('.').pop() || '').toLowerCase();
+    renderBOQAiPanel();
+    try {
+      var ext = _boqAI.fileType;
+      var rows = [];
+      if (['xlsx','xls','csv'].indexOf(ext) >= 0) rows = await parseBOQSpreadsheet(file, ext);
+      else if (['pdf','jpg','jpeg','png'].indexOf(ext) >= 0) rows = await extractBOQWithVision(file);
+      else throw new Error('รองรับเฉพาะ PDF, Excel, CSV, JPG, PNG');
+      if (!rows.length) throw new Error('ไม่พบรายการ BOQ ในไฟล์นี้');
+      var lastCat = '';
+      _boqAI.items = rows.map(function(r,i){
+        var qty = Number(r.qty || r.quantity || 1) || 1;
+        var unitPrice = Number(r.unitPrice || r.unit_price || r.rate || 0) || 0;
+        var total = Number(r.total || r.amount || r.supplierTotal || (qty * unitPrice)) || 0;
+        if (!unitPrice && qty) unitPrice = sRound(total / qty);
+        var cat = cleanSupplierCategory(r.category || r.supplierCategory || r.section || r.group || '', r.item || r.description || '');
+        if (cat && cat !== 'Uncategorized / ไม่ระบุหมวด') lastCat = cat;
+        else if (lastCat) cat = lastCat;
+        return { id:i+1, item:String(r.item || r.description || ('Item ' + (i+1))).trim(), qty:qty, unit:String(r.unit || 'lot'), supplierUnit:unitPrice, supplierTotal:sRound(total), category:cat, supplierCategory:cat, add:0, final:sRound(total) };
+      });
+      _boqAI.stage = 'pricing';
+      _boqAI.syncedAt = '';
+    } catch(err) {
+      _boqAI.stage = 'upload';
+      _boqAI.error = err && err.message ? err.message : 'อ่านไฟล์ไม่สำเร็จ';
+    }
+    renderBOQAiPanel();
+  };
+
+  function supplierReasonCard(){
+    var preview = '';
+    if (typeof window.buildBOQMarketReasonPreviewV2 === 'function') preview = window.buildBOQMarketReasonPreviewV2();
+    else preview = '<div class="text-xs text-slate-500 leading-6">กด “วิเคราะห์ด้วย API” เพื่อให้ AI สรุป benchmark ตลาดและเหตุผลการบวกราคา</div>';
+    if (_boqAI && _boqAI.reasonSummary) preview = '<div class="text-xs leading-6 text-slate-200 whitespace-pre-line">' + sEsc(_boqAI.reasonSummary) + '</div>';
+    return '<div class="bg-slate-950 border border-orange-500/25 rounded-2xl p-5">' +
+      '<div class="flex items-start justify-between gap-3 mb-3"><div><div class="text-sm font-semibold text-white flex items-center gap-2"><i data-lucide="brain-circuit" class="w-4 h-4 text-orange-400"></i> Reason by AI</div><div class="text-xs text-slate-500 mt-1 leading-5">ใช้หมวดตามใบ Supplier และวิเคราะห์ราคาตลาดโดยประมาณ</div></div>' +
+      '<button class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-[11px] font-semibold flex-shrink-0" onclick="generateBOQMarketReason()">วิเคราะห์ด้วย API</button></div>' +
+      '<div id="boq-reason-box" class="min-h-[180px] max-h-[420px] overflow-auto rounded-xl border border-slate-800 bg-slate-950/70 p-3">' + preview + '</div>' +
+      '<div class="flex gap-2 mt-3"><button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[11px]" onclick="copyBOQReasonSummary()">Copy Reason</button><button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[11px]" onclick="resetBOQReasonSummary()">Reset</button></div>' +
+    '</div>';
+  }
+  function syncBadgeHTML(b){
+    if (!b || !b.synced_at) return '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[10px] font-semibold"><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>ยังไม่ Sync</span>';
+    return '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[10px] font-semibold"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Sync แล้ว</span>';
+  }
+
+  renderProjectBOQSummary = function(projId, quotationId) {
+    var b = latestProjectBOQ(projId, quotationId);
+    if (!b) {
+      return '<div class="mt-4 mb-5 bg-slate-950/50 border border-dashed border-slate-700 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">' +
+        '<div><div class="text-sm font-semibold text-white">BOQ Attachment</div><div class="text-xs text-slate-500 mt-1">ยังไม่มี BOQ แนบกับใบเสนอราคานี้</div></div>' +
+        '<button class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs flex items-center gap-1" onclick="openBOQAiPanel(\'' + projId + '\',\'' + (quotationId || '') + '\')"><i data-lucide="sparkles" class="w-3 h-3"></i> BOQ AI Extract</button>' +
+      '</div>';
+    }
+    var items = normalizeSupplierCategories(safeParseJSON(b.items_json));
+    var catCount = categoriesFromItems(items).length;
+    return '<div class="mt-4 mb-5 bg-slate-950/60 border border-orange-500/30 rounded-xl p-4">' +
+      '<div class="flex flex-wrap items-start justify-between gap-3">' +
+        '<div><div class="text-sm font-semibold text-white flex items-center gap-2"><i data-lucide="paperclip" class="w-4 h-4 text-orange-400"></i> BOQ Attachment ' + syncBadgeHTML(b) + '</div>' +
+        '<div class="text-xs text-slate-500 mt-1">' + sEsc(b.supplier_file_name || 'BOQ') + ' · ' + catCount + ' หมวดตามใบ Supplier · สร้าง ' + fmtDate(b.created_at) + (b.updated_at ? ' · แก้ล่าสุด ' + fmtDate(b.updated_at) : '') + (b.synced_at ? ' · Sync ' + fmtDate(b.synced_at) : '') + '</div></div>' +
+        '<div class="flex gap-2 flex-wrap">' +
+          '<button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs" onclick="previewLatestSupplierBOQ(\'' + projId + '\',\'' + (quotationId || '') + '\')">Supplier BOQ</button>' +
+          '<button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs" onclick="previewLatestBOQ(\'' + projId + '\',\'' + (quotationId || '') + '\')">Client BOQ</button>' +
+          '<button class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs font-semibold" onclick="openSavedBOQEditor(\'' + projId + '\',\'' + (quotationId || '') + '\')">ปรับ BOQ</button>' +
+          '<button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs" onclick="openBOQAiPanel(\'' + projId + '\',\'' + (quotationId || '') + '\')">BOQ AI ใหม่</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="grid grid-cols-2 md:grid-cols-4 gap-2 mt-4">' +
+        '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Supplier Cost</div><div class="mono text-sm text-slate-200">' + sFmt(b.supplier_total||0) + '</div></div>' +
+        '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Profit</div><div class="mono text-sm text-orange-400">+' + sFmt(b.profit_amount||0) + '</div></div>' +
+        '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Final</div><div class="mono text-sm text-emerald-400">' + sFmt(b.final_total||0) + '</div></div>' +
+        '<div class="bg-slate-900 border border-slate-800 rounded-lg p-3"><div class="text-[10px] text-slate-500 uppercase">Sync Status</div><div class="text-sm">' + syncBadgeHTML(b) + '</div></div>' +
+      '</div>' +
+    '</div>';
+  };
+
+  renderBOQPricingStep = function(supplierTotal, finalTotal, profit, margin) {
+    normalizeSupplierCategories(_boqAI.items || []);
+    var items = _boqAI.items || [];
+    var editMode = !!_boqAI.isEditingExisting;
+    var cats = categoriesFromItems(items);
+    var groupedRows = cats.map(function(cat){
+      var groupItems = items.map(function(r,idx){ return { r:r, idx:idx }; }).filter(function(o){ return cleanSupplierCategory(o.r.category, o.r.item) === cat; });
+      if (!groupItems.length) return '';
+      var subtotalSupplier = groupItems.reduce(function(s,o){ return s + (Number(o.r.supplierTotal)||0); },0);
+      var subtotalAdd = groupItems.reduce(function(s,o){ return s + (Number(o.r.add)||0); },0);
+      var subtotalFinal = groupItems.reduce(function(s,o){ return s + (Number(o.r.final)||Number(o.r.supplierTotal)||0); },0);
+      var color = catColor(cat);
+      var header = '<tr class="boq-cat-header" style="background:rgba(15,23,42,.85)"><td colspan="7" class="px-3 py-2 border-y border-slate-700"><div class="flex flex-wrap items-center justify-between gap-2"><div class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full" style="background:'+color+'"></span><span class="text-xs font-semibold text-white">'+sEsc(cat)+'</span><span class="text-[10px] text-slate-500">'+groupItems.length+' รายการ</span></div><div class="text-[10px] text-slate-500">Supplier <span class="mono text-slate-200">'+sFmt(subtotalSupplier)+'</span> · Add <span class="mono text-orange-300">+'+sFmt(subtotalAdd)+'</span> · Final <span class="mono text-emerald-300">'+sFmt(subtotalFinal)+'</span></div></div></td></tr>';
+      var rows = groupItems.map(function(o){
+        var r = o.r, i = o.idx, c = cleanSupplierCategory(r.category, r.item), col = catColor(c);
+        return '<tr class="border-b border-slate-800">' +
+          '<td class="py-2 pr-2 text-slate-500 text-xs px-3">' + (i+1) + '</td>' +
+          '<td class="py-2 pr-2"><div class="text-xs text-white leading-5">' + sEsc(r.item || '-') + '</div><div class="text-[10px] text-slate-500">' + sEsc(r.qty || 0) + ' ' + sEsc(r.unit || '') + ' × ' + sFmt(r.supplierUnit || 0) + '</div></td>' +
+          '<td class="py-2 pr-2"><span class="px-2 py-0.5 rounded-full text-[10px] whitespace-nowrap" style="background:' + col + '22;color:' + col + '">' + sEsc(c) + '</span></td>' +
+          '<td class="py-2 pr-2 text-right mono text-xs text-slate-300">' + sFmt(r.supplierTotal || 0) + '</td>' +
+          '<td class="py-2 pr-2"><input id="boq-add-' + i + '" type="text" inputmode="decimal" value="' + sFmt(r.add || 0) + '" class="w-24 px-2 py-1 bg-slate-900 border border-slate-700 rounded text-xs mono text-right text-orange-300 focus:border-orange-500 focus:outline-none" onfocus="this.select()" oninput="boqManualAddInput(' + i + ',this);setTimeout(function(){ if(window.refreshBOQSummaryUI) refreshBOQSummaryUI(); if(window.refreshBOQReasonSummary) refreshBOQReasonSummary(); },0)"></td>' +
+          '<td class="py-2 pr-2 text-right mono text-xs font-semibold text-emerald-400" id="boq-final-' + i + '">' + sFmt(r.final || r.supplierTotal || 0) + '</td>' +
+          '<td class="py-2 px-3 text-right"><div class="flex justify-end gap-1"><button class="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-[11px] text-slate-200" onclick="boqOpenItemEditor(' + i + ')">Edit</button><button class="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-[11px] text-slate-400" onclick="boqDuplicateRow(' + i + ')">Copy</button><button class="px-2 py-1 bg-red-900/40 hover:bg-red-900 rounded-lg text-[11px] text-red-300" onclick="boqDeleteRow(' + i + ')">Del</button></div></td>' +
+        '</tr>';
+      }).join('');
+      return header + rows;
+    }).join('');
+    var syncMark = (_boqAI.syncedAt || (_boqAI.originalBOQ && _boqAI.originalBOQ.synced_at)) ? '<span id="boq-inline-sync-badge" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[10px] font-semibold"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Sync แล้ว</span>' : '<span id="boq-inline-sync-badge" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-400 text-[10px]">ยังไม่ Sync</span>';
+    return '<div class="flex-1 overflow-auto p-4 md:p-6"><div class="grid lg:grid-cols-[330px_1fr] gap-5"><aside class="space-y-4">' +
+      '<div class="bg-slate-950 border border-slate-800 rounded-2xl p-5"><div class="flex items-start justify-between gap-2"><div><div class="text-xs text-slate-500 uppercase tracking-wider mb-1">Supplier Cost</div><div id="boq-supplier-total" class="text-3xl mono text-white font-semibold mb-1">' + sFmt(supplierTotal) + '</div></div>' + syncMark + '</div><div class="text-xs text-slate-600">' + items.length + ' รายการ · ' + cats.length + ' หมวดตามใบ Supplier' + (editMode ? ' · กำลังปรับ BOQ ที่บันทึกไว้' : '') + '</div><div class="h-px bg-slate-800 my-4"></div>' +
+      '<label class="text-xs text-slate-400">Desired Profit / กำไรที่ต้องการ</label><div class="flex items-center gap-2 mt-2"><input id="boq-target-profit" type="text" inputmode="decimal" value="' + sEsc(_boqAI.targetProfit || '') + '" placeholder="เช่น 80000" class="flex-1 px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white mono text-right focus:border-orange-500 focus:outline-none" oninput="boqTargetProfitInput(this.value)" onkeydown="if(event.key===\'Enter\') runBOQAI()"><span class="text-xs text-slate-500">THB</span></div>' +
+      '<button class="mt-3 w-full px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm font-semibold flex items-center justify-center gap-2" onclick="runBOQAI()"><i data-lucide="sparkles" class="w-4 h-4"></i> APPLY AI PRICING</button></div>' +
+      '<div class="bg-slate-950 border border-slate-800 rounded-2xl p-5 space-y-3"><div class="flex justify-between text-sm"><span class="text-slate-500">Profit Added</span><span class="mono text-orange-400" id="boq-profit-total">+' + sFmt(profit) + '</span></div><div class="flex justify-between text-sm"><span class="text-slate-500">Final Selling Price</span><span class="mono text-emerald-400 font-semibold" id="boq-final-total">' + sFmt(finalTotal) + '</span></div><div class="flex justify-between text-sm"><span class="text-slate-500">Margin</span><span class="mono text-purple-400" id="boq-margin-total">' + margin + '%</span></div><div class="h-px bg-slate-800"></div><button class="w-full px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-semibold" onclick="saveBOQToProject()">' + (editMode ? 'Save BOQ + Sync Quotation' : 'Confirm + Sync Quotation') + '</button><div id="boq-sync-note" class="text-[11px] text-slate-500 leading-5">กดปุ่มนี้แล้วระบบจะแสดงสถานะ <span class="text-emerald-300">Sync แล้ว</span> ในหน้าโปรเจกต์</div><button class="w-full px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm" onclick="previewCurrentSupplierBOQ()">Preview Supplier BOQ</button><button class="w-full px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm" onclick="previewCurrentBOQ()">Preview Client BOQ</button></div>' +
+      '<div class="bg-slate-950 border border-slate-800 rounded-2xl p-5"><div class="text-sm font-semibold text-white mb-2">BOQ Manual Edit + AI</div><div class="text-xs text-slate-500 leading-6">หมวดหมู่ใช้ตามใบเสนอราคาของ Supplier: ถ้าใบ Supplier แบ่งเป็น MATERIAL / INSTALLATION / OTHER ระบบจะใช้ชื่อนั้นตรง ๆ ไม่บังคับแปลงเป็นหมวดมาตรฐาน</div></div>' + supplierReasonCard() +
+      '</aside><main class="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden"><div class="p-4 border-b border-slate-800 flex items-center justify-between gap-2"><div><div class="text-sm font-semibold text-white">BOQ Pricing Table ตามหมวด Supplier</div><div class="text-xs text-slate-500">แสดงหมวดที่พบจริงจากใบ Supplier และปรับ manual ได้ทุกแถว</div></div><button class="px-3 py-1.5 bg-slate-800 text-xs rounded-lg" onclick="boqAddBlankRow()">+ Add Row</button></div><div class="overflow-auto"><table class="w-full text-sm"><thead><tr class="border-b border-slate-800 text-[10px] uppercase tracking-wider text-slate-500"><th class="text-left py-2 px-3 w-10">#</th><th class="text-left py-2">Item</th><th class="text-left py-2 w-44">Supplier Category</th><th class="text-right py-2 w-32">Supplier</th><th class="text-right py-2 w-28">Add</th><th class="text-right py-2 w-32">Final</th><th class="text-right py-2 px-3 w-28"></th></tr></thead><tbody id="boq-items-body">' + groupedRows + '</tbody></table></div></main></div></div>';
+  };
+
+  // Custom item editor with supplier category text input + quick category picker.
+  var _supplierEdit = null;
+  window.boqCloseItemEditor = function(){ var el = document.getElementById('boq-item-editor-modal'); if (el) el.innerHTML = ''; _supplierEdit = null; };
+  window.boqOpenItemEditor = function(index){
+    if (!_boqAI || !_boqAI.items || !_boqAI.items[index]) return;
+    _supplierEdit = { index:index, draft: JSON.parse(JSON.stringify(_boqAI.items[index])) };
+    renderSupplierItemEditor();
+  };
+  window.boqUpdateSupplierDraft = function(field, value){
+    if (!_supplierEdit) return;
+    var d = _supplierEdit.draft;
+    if (['qty','supplierUnit','supplierTotal','add','final'].indexOf(field) >= 0) value = parseFloat(value || 0) || 0;
+    d[field] = value;
+    if (field === 'qty' || field === 'supplierUnit') {
+      d.supplierTotal = sRound((parseFloat(d.qty)||0) * (parseFloat(d.supplierUnit)||0));
+      d.final = sRound((parseFloat(d.supplierTotal)||0) + (parseFloat(d.add)||0));
+    }
+    if (field === 'supplierTotal' || field === 'add') d.final = sRound((parseFloat(d.supplierTotal)||0) + (parseFloat(d.add)||0));
+    if (field === 'final') d.add = sRound((parseFloat(d.final)||0) - (parseFloat(d.supplierTotal)||0));
+    renderSupplierItemEditor();
+  };
+  window.boqSaveItemEditor = function(){
+    if (!_supplierEdit || !_boqAI || !_boqAI.items[_supplierEdit.index]) return;
+    var d = _supplierEdit.draft;
+    d.category = cleanSupplierCategory(d.category, d.item);
+    d.supplierCategory = d.category;
+    _boqAI.items[_supplierEdit.index] = JSON.parse(JSON.stringify(d));
+    window.boqCloseItemEditor();
+    renderBOQAiPanel();
+  };
+  function renderSupplierItemEditor(){
+    if (!_supplierEdit) return;
+    var d = _supplierEdit.draft;
+    var cats = categoriesFromItems(_boqAI.items || []);
+    var el = document.getElementById('boq-item-editor-modal');
+    if (!el) { el = document.createElement('div'); el.id = 'boq-item-editor-modal'; document.body.appendChild(el); }
+    var catOptions = cats.map(function(c){ return '<button class="px-2 py-1 rounded-lg border border-slate-700 text-[11px] text-slate-300 hover:border-orange-500" onclick="boqUpdateSupplierDraft(\'category\',\'' + sEsc(String(c)).replace(/&#39;/g,"\\'") + '\')">' + sEsc(c) + '</button>'; }).join('');
+    el.innerHTML = '<div class="fixed inset-0 z-[99999] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"><div class="w-full max-w-4xl bg-[#0a0a0a] border border-slate-800 rounded-2xl overflow-hidden shadow-2xl"><div class="px-5 py-3 border-b border-slate-800 flex items-center justify-between"><div><div class="text-white font-semibold">Edit BOQ Item</div><div class="text-xs text-slate-500">หมวดหมู่ใช้ชื่อหมวดจากใบ Supplier และแก้ชื่อหมวดเองได้</div></div><button class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs" onclick="boqCloseItemEditor()">ปิด</button></div>' +
+      '<div class="p-5 space-y-4"><div class="grid md:grid-cols-2 gap-3"><div class="md:col-span-2"><label class="text-[11px] text-slate-400">Item / Description</label><textarea rows="3" class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 outline-none" oninput="boqUpdateSupplierDraft(\'item\', this.value)">' + sEsc(d.item||'') + '</textarea></div>' +
+      '<div class="md:col-span-2"><label class="text-[11px] text-slate-400">Supplier Category / หมวดตามใบ Supplier</label><input class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 outline-none" value="' + sEsc(d.category||'') + '" oninput="boqUpdateSupplierDraft(\'category\', this.value)"><div class="flex flex-wrap gap-2 mt-2">' + catOptions + '</div></div>' +
+      '<div><label class="text-[11px] text-slate-400">Qty</label><input type="number" step="0.01" class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white text-right mono" value="' + sEsc(d.qty||0) + '" oninput="boqUpdateSupplierDraft(\'qty\', this.value)"></div>' +
+      '<div><label class="text-[11px] text-slate-400">Unit</label><input class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white" value="' + sEsc(d.unit||'') + '" oninput="boqUpdateSupplierDraft(\'unit\', this.value)"></div>' +
+      '<div><label class="text-[11px] text-slate-400">Supplier Unit Price</label><input type="number" step="0.01" class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white text-right mono" value="' + sEsc(d.supplierUnit||0) + '" oninput="boqUpdateSupplierDraft(\'supplierUnit\', this.value)"></div>' +
+      '<div><label class="text-[11px] text-slate-400">Supplier Total</label><input type="number" step="0.01" class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white text-right mono" value="' + sEsc(d.supplierTotal||0) + '" oninput="boqUpdateSupplierDraft(\'supplierTotal\', this.value)"></div>' +
+      '<div><label class="text-[11px] text-slate-400">Add / Profit</label><input type="number" step="0.01" class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-orange-300 text-right mono" value="' + sEsc(d.add||0) + '" oninput="boqUpdateSupplierDraft(\'add\', this.value)"></div>' +
+      '<div><label class="text-[11px] text-slate-400">Final Selling Price</label><input type="number" step="0.01" class="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-emerald-300 text-right mono" value="' + sEsc(d.final||0) + '" oninput="boqUpdateSupplierDraft(\'final\', this.value)"></div></div>' +
+      '<div class="rounded-xl bg-slate-950 border border-slate-800 p-4 text-xs text-slate-300"><div class="font-semibold text-white mb-2">Quick Summary</div><div class="grid grid-cols-2 md:grid-cols-4 gap-2"><div>ก่อนบวก: <span class="mono text-slate-100">' + sFmt(d.supplierTotal||0) + '</span></div><div>กำไรที่บวก: <span class="mono text-orange-300">+' + sFmt(d.add||0) + '</span></div><div>ราคาขาย: <span class="mono text-emerald-300">' + sFmt(d.final||0) + '</span></div><div>หมวด: <span class="text-slate-100">' + sEsc(d.category||'-') + '</span></div></div></div>' +
+      '<div class="flex gap-2"><button class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-semibold" onclick="boqSaveItemEditor()">Save Item</button><button class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm" onclick="boqCloseItemEditor()">Cancel</button></div></div></div></div>';
+  }
+
+  saveBOQToProject = async function() {
+    if (!_boqAI || !_boqAI.items || !_boqAI.items.length) return;
+    normalizeSupplierCategories(_boqAI.items);
+    var projId = _boqAI.projectId;
+    var isEdit = !!(_boqAI.isEditingExisting && _boqAI.boqRecordId);
+    var boqRecord = isEdit ? allData.find(function(r){ return r.__backendId === _boqAI.boqRecordId; }) : null;
+    var q = _boqAI.quotationId ? allData.find(function(r){ return r.__backendId === _boqAI.quotationId; }) : null;
+    if (!q && boqRecord && boqRecord.quotation_id) q = allData.find(function(r){ return r.__backendId === boqRecord.quotation_id; });
+    if (!q) q = getQuotation(projId);
+    try {
+      if (!q) q = await createQuotationForBOQ(projId);
+      var st = sStats(_boqAI.items);
+      var syncAt = new Date().toISOString();
+      var payload = Object.assign({}, boqRecord || {}, {
+        record_type:'boq',
+        boq_id:(boqRecord && boqRecord.boq_id) || genId(),
+        project_id:projId,
+        quotation_id:q.__backendId,
+        supplier_file_name:_boqAI.fileName || (boqRecord && boqRecord.supplier_file_name) || 'BOQ',
+        supplier_total:st.supplierTotal,
+        target_profit:sParseMoney(_boqAI.targetProfit),
+        final_total:st.finalTotal,
+        profit_amount:st.profit,
+        profit_percent:st.margin,
+        items_json:JSON.stringify(_boqAI.items),
+        created_at:(boqRecord && boqRecord.created_at) || syncAt,
+        updated_at:syncAt,
+        synced_at:syncAt,
+        sync_status:'synced',
+        synced_quotation_id:q.__backendId,
+        synced_quotation_doc_number:q.doc_number || ''
+      });
+      var res;
+      if (isEdit && boqRecord && boqRecord.__backendId) {
+        var idx = allData.findIndex(function(r){ return r.__backendId === boqRecord.__backendId; });
+        if (idx >= 0) allData[idx] = payload;
+        res = await window.dataSdk.update(payload);
+      } else {
+        res = await window.dataSdk.create(payload);
+      }
+      if (!res || !res.isOk) throw new Error('บันทึก BOQ ไม่สำเร็จ');
+      q.doc_subject = q.doc_subject || ((_boqAI && _boqAI.projectName) || (sProject(projId) || {}).project_name || '');
+      q.ref_no = q.ref_no || projId;
+      q.remark_text = q.remark_text || 'See attached Supplier BOQ for details.';
+      q.boq_synced_at = syncAt;
+      q.boq_sync_status = 'synced';
+      q.boq_source_file = payload.supplier_file_name;
+      await recalcQuotation(q, buildBOQSummaryItems(_boqAI.items));
+      await addLog(projId, isEdit ? 'ปรับ BOQ' : 'BOQ AI Extract', (isEdit ? 'อัปเดต BOQ และ ' : 'บันทึก BOQ และ ') + 'Sync ใบเสนอราคา ' + (q.doc_number || ''));
+      _boqAI.syncedAt = syncAt;
+      showToast('Sync เข้าใบเสนอราคาแล้ว');
+      closeBOQAiPanel();
+      navigate('project-detail', projId);
+    } catch(err) {
+      showToast((err && err.message) || 'บันทึกไม่สำเร็จ', 'error');
+    }
+  };
+})();
+/* ===== END BOQ SUPPLIER CATEGORY + SYNC BADGE PATCH ===== */
+
 </script>
 </body>
 </html>
