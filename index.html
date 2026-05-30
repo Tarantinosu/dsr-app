@@ -349,6 +349,7 @@ html,body{height:100%;margin:0}
       <button class="nav-item whitespace-nowrap md:whitespace-normal flex items-center gap-3 flex-shrink-0 md:flex-shrink" data-page="profiles" onclick="navigate('profiles')"><i data-lucide="users" class="w-4 h-4 flex-shrink-0"></i><span class="hidden md:inline">ลูกค้า &amp; พาร์ทเนอร์</span></button>
       <div class="px-3 py-2 mt-2 text-xs font-semibold text-slate-500 uppercase tracking-wider hidden md:block">Projects</div>
       <button class="nav-item whitespace-nowrap md:whitespace-normal flex items-center gap-3 flex-shrink-0 md:flex-shrink" data-page="projects" onclick="navigate('projects')"><i data-lucide="folder" class="w-4 h-4 flex-shrink-0"></i><span class="hidden md:inline">โปรเจกต์</span></button>
+      <button class="nav-item whitespace-nowrap md:whitespace-normal flex items-center gap-3 flex-shrink-0 md:flex-shrink" data-page="completed-projects" onclick="navigate('completed-projects')"><i data-lucide="folder-check" class="w-4 h-4 flex-shrink-0"></i><span class="hidden md:inline">โครงการเสร็จสิ้น</span></button>
       <button class="nav-item whitespace-nowrap md:whitespace-normal flex items-center gap-3 flex-shrink-0 md:flex-shrink" data-page="quotations" onclick="navigate('quotations')"><i data-lucide="file-text" class="w-4 h-4 flex-shrink-0"></i><span class="hidden md:inline">ใบเสนอราคา</span></button>
       <div class="px-3 py-2 mt-2 text-xs font-semibold text-slate-500 uppercase tracking-wider hidden md:block">Finance</div>
       <button class="nav-item whitespace-nowrap md:whitespace-normal flex items-center gap-3 flex-shrink-0 md:flex-shrink" data-page="installments" onclick="navigate('installments')"><i data-lucide="credit-card" class="w-4 h-4 flex-shrink-0"></i><span class="hidden md:inline">งวดงาน</span></button>
@@ -586,8 +587,9 @@ function renderPage() {
     switch(currentPage) {
       case 'dashboard':      renderDashboard(main); break;
       case 'profiles':       renderProfiles(main); break;
-      case 'projects':       renderProjects(main); break;
-      case 'quotations':     renderQuotations(main); break;
+      case 'projects':            renderProjects(main); break;
+      case 'completed-projects':  renderCompletedProjects(main); break;
+      case 'quotations':          renderQuotations(main); break;
       case 'installments':   renderInstallments(main); break;
       case 'partners':       renderPartners(main); break;
       case 'documents':      renderDocuments(main); break;
@@ -865,71 +867,104 @@ function renderProjects(el) {
   var projects = getProjects();
   var isGrid = _projectView === 'grid';
   var search = (el._prsearch || '').toLowerCase();
-  var filtered = projects.filter(function(p){ return !search || (p.project_name||'').toLowerCase().includes(search) || (p.client_name||'').toLowerCase().includes(search); });
-  var activeFiltered = filtered.filter(function(p){ return getProjectDisplayStatus(p) !== 'done'; });
-  var doneFiltered = filtered.filter(function(p){ return getProjectDisplayStatus(p) === 'done'; });
+  var filtered = projects.filter(function(p){
+    return getProjectDisplayStatus(p) !== 'done' &&
+      (!search || (p.project_name||'').toLowerCase().includes(search) || (p.client_name||'').toLowerCase().includes(search));
+  });
   var grid = isGrid ? 'grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3' : 'space-y-2';
   var b1 = 'p-2 rounded-lg border '+(!isGrid?'border-orange-500 text-orange-400':'border-slate-700 text-slate-400');
   var b2 = 'p-2 rounded-lg border '+(isGrid?'border-orange-500 text-orange-400':'border-slate-700 text-slate-400');
-  function makeCard(p) {
+  var cards = filtered.map(function(p) {
     var q = getQuotation(p.project_id);
     var total = q ? q.grand_total||0 : 0;
     var inst = getInstallments(p.project_id);
     var paidAmt = inst.filter(function(i){return i.status==='paid';}).reduce(function(s,i){return s+(i.amount||0);},0);
     var ds = getProjectDisplayStatus(p);
-    var isDone = ds==='done';
-    var ic = isDone?'bg-emerald-900/50 text-emerald-400':'bg-orange-900/50 text-orange-400';
     var srch = ((p.project_name||'')+' '+(p.client_name||'')).toLowerCase();
     var delBtn = '<button class="text-slate-500 hover:text-red-400 p-1" onclick="deleteProject(\'' + p.project_id + '\',event)"><i data-lucide="trash-2" class="w-3 h-3"></i></button>';
-    var allPaid = !isDone && inst.length > 0 && inst.every(function(i){return i.status==='paid';});
-    var doneBtn = allPaid ? '<button class="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs flex items-center gap-1" onclick="markProjectDone(\''+p.project_id+'\',event)"><i data-lucide="check" class="w-3 h-3"></i> Done</button>' : '';
+    var allPaid = inst.length > 0 && inst.every(function(i){return i.status==='paid';});
+    var doneBtn = allPaid ? '<button class="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs flex items-center gap-1" onclick="markProjectDone(\''+p.project_id+'\',event)"><i data-lucide="check" class="w-3 h-3"></i> เสร็จสิ้น</button>' : '';
     var nav = 'navigate(\'project-detail\',\'' + p.project_id + '\')';
     if (isGrid) return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col gap-3 card-hover cursor-pointer" data-s="'+srch+'" onclick="'+nav+'">' +
-      '<div class="flex items-start justify-between"><div class="w-10 h-10 rounded-lg '+ic+' flex items-center justify-center"><i data-lucide="'+(isDone?'folder-check':'folder')+'" class="w-5 h-5"></i></div><span class="'+badgeClass(ds)+'">'+ds+'</span></div>' +
+      '<div class="flex items-start justify-between"><div class="w-10 h-10 rounded-lg bg-orange-900/50 text-orange-400 flex items-center justify-center"><i data-lucide="folder" class="w-5 h-5"></i></div><span class="'+badgeClass(ds)+'">'+ds+'</span></div>' +
       '<div class="flex-1 min-w-0"><div class="text-sm font-semibold text-white leading-tight mb-0.5">'+(p.project_name||'Untitled')+'</div><div class="text-xs text-slate-500">'+(p.client_name||'-')+'</div></div>' +
       '<div class="border-t border-slate-800 pt-2 flex items-end justify-between"><div><div class="mono text-sm font-bold text-white">'+fmt(total)+'</div><div class="text-xs text-slate-500">'+inst.length+' งวด · '+fmt(paidAmt)+' จ่ายแล้ว</div></div>' +
       '<div onclick="event.stopPropagation()" class="flex items-center gap-1">'+doneBtn+delBtn+'</div></div></div>';
     return '<div class="p-4 bg-slate-900 border border-slate-800 rounded-xl card-hover cursor-pointer flex items-center gap-4" data-s="'+srch+'" onclick="'+nav+'">' +
-      '<div class="w-10 h-10 rounded-lg '+ic+' flex items-center justify-center"><i data-lucide="'+(isDone?'folder-check':'folder')+'" class="w-5 h-5"></i></div>' +
+      '<div class="w-10 h-10 rounded-lg bg-orange-900/50 text-orange-400 flex items-center justify-center"><i data-lucide="folder" class="w-5 h-5"></i></div>' +
       '<div class="flex-1 min-w-0"><div class="text-sm font-medium text-white">'+(p.project_name||'Untitled')+'</div><div class="text-xs text-slate-500">'+(p.client_name||'-')+' · '+fmtDate(p.created_at)+'</div></div>' +
       '<div class="text-right mr-2"><div class="mono text-sm text-white">'+fmt(total)+'</div><div class="text-xs text-slate-500">'+inst.length+' งวด · '+fmt(paidAmt)+' ชำระแล้ว</div></div>' +
       '<span class="'+badgeClass(ds)+'">'+ds+'</span>' +
       '<div onclick="event.stopPropagation()" class="flex items-center gap-1">'+doneBtn+delBtn+'</div></div>';
-  }
-  var activeCards = activeFiltered.map(makeCard).join('');
-  var doneCards = doneFiltered.map(makeCard).join('');
+  }).join('');
+  var doneCount = getProjects().filter(function(p){ return getProjectDisplayStatus(p) === 'done'; }).length;
   el.innerHTML = '<div class="p-6 fade-in">' +
-    '<div class="flex justify-between items-center mb-4"><div><h1 class="text-2xl font-bold text-white">โปรเจกต์ทั้งหมด</h1><p class="text-slate-400 text-sm">'+activeFiltered.length+' กำลังดำเนิน</p></div>' +
-    '<button class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="showProjectForm()"><i data-lucide="plus" class="w-4 h-4"></i> สร้างโปรเจกต์</button></div>' +
+    '<div class="flex justify-between items-center mb-4"><div><h1 class="text-2xl font-bold text-white">โปรเจกต์</h1><p class="text-slate-400 text-sm">'+filtered.length+' กำลังดำเนิน</p></div>' +
+    '<div class="flex items-center gap-2">' +
+    (doneCount > 0 ? '<button class="px-3 py-1.5 bg-emerald-900/50 hover:bg-emerald-900 border border-emerald-800 text-emerald-400 rounded-lg text-xs flex items-center gap-1.5" onclick="navigate(\'completed-projects\')"><i data-lucide="folder-check" class="w-3.5 h-3.5"></i> เสร็จสิ้น <span class="bg-emerald-800 text-emerald-300 px-1.5 py-0.5 rounded-full text-xs">'+doneCount+'</span></button>' : '') +
+    '<button class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="showProjectForm()"><i data-lucide="plus" class="w-4 h-4"></i> สร้างโปรเจกต์</button>' +
+    '</div></div>' +
     '<div class="flex gap-2 mb-4">' +
     '<div class="relative flex-1"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i><input type="text" placeholder="ค้นหาโปรเจกต์..." oninput="_projSearch(this,el)" class="w-full pl-9 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 focus:outline-none"></div>' +
     '<button class="'+b1+'" onclick="_projectView=\'list\';localStorage.setItem(\'DSR_prv\',\'list\');renderProjects(document.getElementById(\'main-content\'))"><i data-lucide="list" class="w-4 h-4"></i></button>' +
     '<button class="'+b2+'" onclick="_projectView=\'grid\';localStorage.setItem(\'DSR_prv\',\'grid\');renderProjects(document.getElementById(\'main-content\'))"><i data-lucide="layout-grid" class="w-4 h-4"></i></button>' +
     '</div>' +
     '<div id="project-form-area"></div>' +
-    '<div id="projects-list" class="'+grid+'">'+(activeFiltered.length===0?'<p class="text-slate-500 text-sm py-8 text-center">ยังไม่มีโปรเจกต์ที่กำลังดำเนิน</p>':activeCards)+'</div>' +
-    (doneFiltered.length > 0 ?
-      '<div class="mt-6 border-t border-slate-800 pt-4">' +
-      '<button class="flex items-center gap-2 text-sm mb-3 w-full text-left" onclick="_toggleDoneFolder(this)">' +
-      '<i data-lucide="folder-check" class="w-4 h-4 text-emerald-400 flex-shrink-0"></i>' +
-      '<span class="font-medium text-emerald-400">โปรเจกต์เสร็จแล้ว</span>' +
-      '<span class="text-xs bg-emerald-900/50 text-emerald-400 px-2 py-0.5 rounded-full ml-1">'+doneFiltered.length+'</span>' +
-      '<i data-lucide="chevron-down" class="w-4 h-4 text-slate-400 ml-auto transition-transform" id="done-folder-chevron"></i>' +
-      '</button>' +
-      '<div id="done-folder-content" class="'+grid+' hidden">'+doneCards+'</div>' +
-      '</div>'
-      : '') +
+    '<div id="projects-list" class="'+grid+'">'+(filtered.length===0?'<p class="text-slate-500 text-sm py-8 text-center">ยังไม่มีโปรเจกต์ที่กำลังดำเนิน</p>':cards)+'</div>' +
     '</div>';
   if (window.lucide) lucide.createIcons();
 }
-function _projSearch(inp,el){el._prsearch=inp.value;var q=inp.value.toLowerCase();['#projects-list>[data-s]','#done-folder-content>[data-s]'].forEach(function(sel){document.querySelectorAll(sel).forEach(function(c){c.style.display=(!q||c.dataset.s.includes(q))?'':'none';});});}
-function _toggleDoneFolder(btn) {
-  var content = document.getElementById('done-folder-content');
-  var chevron = document.getElementById('done-folder-chevron');
-  if (!content) return;
-  var isHidden = content.classList.toggle('hidden');
-  if (chevron) chevron.style.transform = isHidden ? '' : 'rotate(180deg)';
+function _projSearch(inp,el){el._prsearch=inp.value;var q=inp.value.toLowerCase();document.querySelectorAll('#projects-list>[data-s]').forEach(function(c){c.style.display=(!q||c.dataset.s.includes(q))?'':'none';});}
+
+function renderCompletedProjects(el) {
+  var projects = getProjects().filter(function(p){ return getProjectDisplayStatus(p) === 'done'; });
+  var isGrid = _projectView === 'grid';
+  var search = (el._cpsearch || '').toLowerCase();
+  var filtered = search ? projects.filter(function(p){ return (p.project_name||'').toLowerCase().includes(search) || (p.client_name||'').toLowerCase().includes(search); }) : projects;
+  var grid = isGrid ? 'grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3' : 'space-y-2';
+  var b1 = 'p-2 rounded-lg border '+(!isGrid?'border-orange-500 text-orange-400':'border-slate-700 text-slate-400');
+  var b2 = 'p-2 rounded-lg border '+(isGrid?'border-orange-500 text-orange-400':'border-slate-700 text-slate-400');
+  var cards = filtered.map(function(p) {
+    var q = getQuotation(p.project_id);
+    var total = q ? q.grand_total||0 : 0;
+    var inst = getInstallments(p.project_id);
+    var paidAmt = inst.filter(function(i){return i.status==='paid';}).reduce(function(s,i){return s+(i.amount||0);},0);
+    var srch = ((p.project_name||'')+' '+(p.client_name||'')).toLowerCase();
+    var delBtn = '<button class="text-slate-500 hover:text-red-400 p-1" onclick="deleteProject(\'' + p.project_id + '\',event)"><i data-lucide="trash-2" class="w-3 h-3"></i></button>';
+    var nav = 'navigate(\'project-detail\',\'' + p.project_id + '\')';
+    if (isGrid) return '<div class="bg-slate-900 border border-emerald-900/50 rounded-xl p-4 flex flex-col gap-3 card-hover cursor-pointer" data-s="'+srch+'" onclick="'+nav+'">' +
+      '<div class="flex items-start justify-between"><div class="w-10 h-10 rounded-lg bg-emerald-900/50 text-emerald-400 flex items-center justify-center"><i data-lucide="folder-check" class="w-5 h-5"></i></div><span class="'+badgeClass('done')+'">done</span></div>' +
+      '<div class="flex-1 min-w-0"><div class="text-sm font-semibold text-white leading-tight mb-0.5">'+(p.project_name||'Untitled')+'</div><div class="text-xs text-slate-500">'+(p.client_name||'-')+'</div></div>' +
+      '<div class="border-t border-slate-800 pt-2 flex items-end justify-between"><div><div class="mono text-sm font-bold text-white">'+fmt(total)+'</div><div class="text-xs text-slate-500">'+inst.length+' งวด · '+fmt(paidAmt)+' จ่ายแล้ว</div></div>' +
+      '<div onclick="event.stopPropagation()">'+delBtn+'</div></div></div>';
+    return '<div class="p-4 bg-slate-900 border border-emerald-900/50 rounded-xl card-hover cursor-pointer flex items-center gap-4" data-s="'+srch+'" onclick="'+nav+'">' +
+      '<div class="w-10 h-10 rounded-lg bg-emerald-900/50 text-emerald-400 flex items-center justify-center"><i data-lucide="folder-check" class="w-5 h-5"></i></div>' +
+      '<div class="flex-1 min-w-0"><div class="text-sm font-medium text-white">'+(p.project_name||'Untitled')+'</div><div class="text-xs text-slate-500">'+(p.client_name||'-')+' · '+fmtDate(p.created_at)+'</div></div>' +
+      '<div class="text-right mr-2"><div class="mono text-sm text-white">'+fmt(total)+'</div><div class="text-xs text-slate-500">'+inst.length+' งวด · '+fmt(paidAmt)+' ชำระแล้ว</div></div>' +
+      '<span class="'+badgeClass('done')+'">done</span>' +
+      '<div onclick="event.stopPropagation()">'+delBtn+'</div></div>';
+  }).join('');
+  el.innerHTML = '<div class="p-6 fade-in">' +
+    '<div class="flex justify-between items-center mb-6">' +
+    '<div><div class="flex items-center gap-2 mb-1"><i data-lucide="folder-check" class="w-5 h-5 text-emerald-400"></i><h1 class="text-2xl font-bold text-white">โครงการเสร็จสิ้น</h1></div>' +
+    '<p class="text-slate-400 text-sm">'+projects.length+' โครงการ</p></div>' +
+    '<div class="flex gap-2">' +
+    '<button class="'+b1+'" onclick="_projectView=\'list\';localStorage.setItem(\'DSR_prv\',\'list\');renderCompletedProjects(document.getElementById(\'main-content\'))"><i data-lucide="list" class="w-4 h-4"></i></button>' +
+    '<button class="'+b2+'" onclick="_projectView=\'grid\';localStorage.setItem(\'DSR_prv\',\'grid\');renderCompletedProjects(document.getElementById(\'main-content\'))"><i data-lucide="layout-grid" class="w-4 h-4"></i></button>' +
+    '</div></div>' +
+    '<div class="relative mb-4"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i>' +
+    '<input type="text" placeholder="ค้นหาโครงการเสร็จสิ้น..." oninput="_cpSearch(this,el)" class="w-full pl-9 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 focus:outline-none"></div>' +
+    (filtered.length === 0 ?
+      '<div class="flex flex-col items-center justify-center py-16 text-center">' +
+      '<div class="w-16 h-16 rounded-2xl bg-emerald-900/20 flex items-center justify-center mb-4"><i data-lucide="folder-check" class="w-8 h-8 text-emerald-700"></i></div>' +
+      '<p class="text-slate-400 text-sm">ยังไม่มีโครงการที่เสร็จสิ้น</p>' +
+      '<p class="text-slate-600 text-xs mt-1">โครงการที่กดปุ่ม เสร็จสิ้น จะมาแสดงที่นี่</p>' +
+      '</div>' :
+      '<div id="completed-list" class="'+grid+'">'+cards+'</div>') +
+    '</div>';
+  if (window.lucide) lucide.createIcons();
 }
+function _cpSearch(inp,el){el._cpsearch=inp.value;var q=inp.value.toLowerCase();document.querySelectorAll('#completed-list>[data-s]').forEach(function(c){c.style.display=(!q||c.dataset.s.includes(q))?'':'none';});}
 
 function showProjectForm() {
   const clients = getProfiles('client');
@@ -1638,7 +1673,7 @@ function renderProjectDetail(el, projId) {
   el.innerHTML = '<div class="p-6 fade-in">' +
     '<button class="text-sm text-slate-400 hover:text-white mb-4 flex items-center gap-1" onclick="navigate(\'projects\')"><i data-lucide="arrow-left" class="w-4 h-4"></i> กลับ</button>' +
     '<div class="flex justify-between items-start mb-6"><div><h1 class="text-2xl font-bold text-white">' + (project.project_name||'Untitled') + '</h1><p class="text-slate-400 text-sm">ลูกค้า: ' + (project.client_name||'-') + ' · Fixed Cost: ' + fmt(project.fixed_cost||0) + ' บาท</p></div>' +
-    '<div class="flex items-center gap-2">' + (showDoneBtn ? '<button class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="markProjectDone(\'' + projId + '\',event)"><i data-lucide="check-circle" class="w-4 h-4"></i> Done</button>' : '') + '<span class="' + badgeClass(displayStatus) + '">' + displayStatus + '</span></div></div>' +
+    '<div class="flex items-center gap-2">' + (showDoneBtn ? '<button class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="markProjectDone(\'' + projId + '\',event)"><i data-lucide="check-circle" class="w-4 h-4"></i> เสร็จสิ้น</button>' : '') + '<span class="' + badgeClass(displayStatus) + '">' + displayStatus + '</span></div></div>' +
     '<div class="flex gap-1 border-b border-slate-800 mb-4">' +
     '<button class="tab-btn active" onclick="showTab(\'qt\',this)">ใบเสนอราคา</button>' +
     '<button class="tab-btn" onclick="showTab(\'split\',this)">พาร์ทเนอร์ (' + splits.length + ')</button>' +
