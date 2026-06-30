@@ -2998,19 +2998,23 @@ function previewDoc(projId, type, docNum) {
   const totalAmount = type === 'QT' ? (q.grand_total || 0) : (instAmount || 0);
 
   const scaledItems = items.map(function(it) { return Object.assign({}, it, { price: roundHU((Number(it.price) || 0) * instRatio) }); }).filter(function(it) { return (it.desc && it.desc.trim()) || (Number(it.price)||0) > 0; });
-  const bodyRows = (scaledItems.length ? scaledItems : [{ desc: project.project_name || '-', qty: 1, price: subtotal }]).map(function(it, i) {
+  const allRowsData = scaledItems.length ? scaledItems : [{ desc: project.project_name || '-', qty: 1, price: subtotal }];
+  const PAGE1_MAX = 14;
+  const PAGEN_MAX = 30;
+
+  function makeRow(it, idx) {
     const qty = Number(it.qty || 0) || 0;
     const price = Number(it.price || 0) || 0;
     const lineTotal = qty * price;
     return '<tr>' +
-      '<td class="m-no">' + (i + 1) + '</td>' +
-      '<td class="m-desc"><div class="item-title">' + esc(it.desc || '-') + '</div>' + (i === 0 && instIdx ? '<div class="item-sub">' + esc(instIdx) + '</div>' : '') + '</td>' +
+      '<td class="m-no">' + (idx + 1) + '</td>' +
+      '<td class="m-desc"><div class="item-title">' + esc(it.desc || '-') + '</div>' + (idx === 0 && instIdx ? '<div class="item-sub">' + esc(instIdx) + '</div>' : '') + '</td>' +
       '<td class="m-center">' + qty + '</td>' +
       '<td class="m-center">-</td>' +
       '<td class="m-money">' + fmt(price) + '</td>' +
       '<td class="m-money strong">' + fmt(lineTotal) + '</td>' +
       '</tr>';
-  }).join('');
+  }
 
   const scheduleSource = installments.length ? installments : [{ installment_index: 0, split_type: 'fixed', split_value: 100, amount: totalAmount, due_date: q.valid_until || '', status: type === 'REC' ? 'paid' : 'pending' }];
   const scheduleRows = scheduleSource.map(function(inst, i) {
@@ -3027,6 +3031,63 @@ function previewDoc(projId, type, docNum) {
       '</tr>';
   }).join('');
 
+  const _itColHead = '<colgroup><col style="width:9mm"><col><col style="width:16mm"><col style="width:16mm"><col style="width:30mm"><col style="width:32mm"></colgroup><thead><tr><th>No.</th><th>Description / รายละเอียด</th><th style="text-align:center">Qty</th><th style="text-align:center">Unit</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Amount</th></tr></thead>';
+  function makeItemTable(rowsHtml) { return '<table class="items-min">' + _itColHead + '<tbody>' + rowsHtml + '</tbody></table>'; }
+
+  const _page1Header =
+    '<div class="min-head">' +
+      '<div class="min-logo">' + (companyLogo ? '<img src="' + companyLogo + '" alt="Company logo">' : '') + '</div>' +
+      '<div class="min-company"><b>' + esc(companyName) + '</b><br>' + esc(companyAddress) + '<br>Email : ' + esc(companyEmail) + ' &nbsp; Website : ' + esc(companyWeb) + ' &nbsp; Tel : ' + esc(companyTel) + ' &nbsp; Tax ID : ' + esc(companyTax) + '</div>' +
+    '</div>' +
+    '<div class="min-title"><div><h1>' + docTitle + '</h1><div class="th">' + docTitleTh + '</div></div>' +
+      '<div class="doc-meta"><div class="row"><span class="label">' + docCodeLabel + '</span><b>' + esc(docNum) + '</b></div><div class="row"><span class="label">Date</span><b>' + docDateText + '</b></div><div class="row"><span class="label">Reference</span><b>' + esc(referenceNo) + '</b></div></div>' +
+    '</div>' +
+    '<div class="info-grid">' +
+      '<div class="info-box"><div class="info-title">Bill To / ลูกค้า</div><div class="info-name">' + esc(clientName) + '</div><div class="info-text">' + htmlText(clientAddress || '-') + '<br>Tax ID: ' + esc(clientTax) + '</div></div>' +
+      '<div class="info-box"><div class="info-title">Document Details</div><div class="detail-grid">' +
+        '<div class="detail-item"><span class="label">Project</span><div class="detail-value">' + esc(quotationSubject) + '</div></div>' +
+        '<div class="detail-item"><span class="label">Attention</span><div class="detail-value">' + esc(attentionName) + '</div></div>' +
+        '<div class="detail-item"><span class="label">Payment Terms</span><div class="detail-value">' + esc(paymentTerms) + '</div></div>' +
+        '<div class="detail-item"><span class="label">Due / Valid</span><div class="detail-value">' + esc(type === 'REC' ? paidDateText : dueDateText) + '</div></div>' +
+      '</div></div>' +
+    '</div>';
+
+  const _contHeader =
+    '<div class="cont-head">' +
+      '<span class="cont-company">' + esc(companyName) + '</span>' +
+      '<span class="cont-doc">' + esc(docTitle) + ' No. ' + esc(docNum) + ' — ต่อ</span>' +
+    '</div>';
+
+  const _footer =
+    '<div class="lower-grid">' +
+      '<div class="note-box terms-red">' +
+        '<div class="block" style="border-top:none;padding-top:0;margin-top:0"><b>Remark / หมายเหตุ</b><br>' + htmlText(remarks) + '</div>' +
+        '<div class="block"><div class="terms-head">Payment Terms &amp; Conditions</div><div>' + bankInfo + '</div></div>' +
+        '<div class="block"><div class="terms-head">Payment Schedule / งวดชำระ</div><table class="schedule"><colgroup><col style="width:22mm"><col style="width:38mm"><col style="width:25mm"><col style="width:28mm"><col style="width:22mm"></colgroup><thead><tr><th>Milestone</th><th>Description</th><th>Due Date</th><th class="right">Amount</th><th>Status</th></tr></thead><tbody>' + scheduleRows + '</tbody></table></div>' +
+      '</div>' +
+      '<div class="totals-qr-wrap"><table class="totals-min"><tr><td>Subtotal</td><td>' + fmt(subtotal) + '</td></tr><tr><td>VAT 7%</td><td>' + fmt(vatAmount) + '</td></tr>' + (whtRate ? '<tr><td>WHT ' + whtRate + '%</td><td>' + fmt(whtAmount) + '</td></tr>' : '') + '<tr class="total"><td>Total</td><td>' + fmt(totalAmount) + '</td></tr></table><div class="payment-qr-box">' + (companyPaymentQr ? '<img src="' + companyPaymentQr + '" alt="Payment QR" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:2mm;">' : 'QR CODE<br>PAYMENT') + '</div></div>' +
+    '</div>' +
+    '<div class="sign-grid-min"><div class="sign-min"><div class="sign-label">Client Acknowledgement</div><div class="sign-name">____________________________</div><div class="sign-role">Signature / Date</div></div><div class="sign-min">' + (companyStamp ? '<img class="stamp-img" src="' + companyStamp + '" alt="Company stamp">' : '') + (companySignature ? '<img class="signature-img" src="' + companySignature + '" alt="Signature">' : '') + '<div class="sign-label">Prepared By</div><div class="sign-name">' + esc(preparedByName) + '</div><div class="sign-role">' + esc(preparedByTitle) + '<br>' + docDateText + '</div></div></div>';
+
+  // Paginate items
+  var _remaining = allRowsData.slice();
+  var _chunks = [];
+  _chunks.push(_remaining.splice(0, PAGE1_MAX));
+  while (_remaining.length > 0) { _chunks.push(_remaining.splice(0, PAGEN_MAX)); }
+
+  var _rowOffset = 0;
+  var pagesHtml = _chunks.map(function(chunk, pi) {
+    var isFirst = pi === 0;
+    var isLast = pi === _chunks.length - 1;
+    var rowsHtml = chunk.map(function(it, i) { return makeRow(it, _rowOffset + i); }).join('');
+    _rowOffset += chunk.length;
+    return '<div class="mindoc-page"><div class="mindoc">' +
+      (isFirst ? _page1Header : _contHeader) +
+      makeItemTable(rowsHtml) +
+      (isLast ? _footer : '') +
+      '</div></div>';
+  }).join('');
+
   const main = document.getElementById('main-content');
   document.title = docTitle + ' No.' + docNum;
   main.innerHTML = '<div class="p-4 fade-in">' +
@@ -3035,8 +3096,14 @@ function previewDoc(projId, type, docNum) {
     '<button class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm" onclick="runPrintDialog()"><i data-lucide="printer" class="w-4 h-4 inline"></i> พิมพ์ / PDF</button>' +
     '</div>' +
     '<style>' +
+    '.mindoc-pages{background:#f3f4f6;padding:8px 0;}' +
+    '.mindoc-page{margin:0 auto 8px;}' +
+    '.mindoc-page:last-child{margin-bottom:0;}' +
     '.mindoc{width:210mm;min-height:297mm;background:#fff;color:#161616;margin:0 auto;padding:14mm 14mm 12mm;box-sizing:border-box;font-family:Arial,Helvetica,sans-serif;font-size:9.6px;line-height:1.45;box-shadow:0 0 0 1px #e5e7eb;}' +
     '.mindoc *{box-sizing:border-box;}' +
+    '.cont-head{display:flex;justify-content:space-between;align-items:center;padding-bottom:3mm;border-bottom:1px solid #9ca3af;margin-bottom:4mm;}' +
+    '.cont-company{font-size:10px;font-weight:800;color:#333;}' +
+    '.cont-doc{font-size:8.5px;color:#777;}' +
     '.min-head{display:grid;grid-template-columns:38mm 1fr;gap:10mm;align-items:start;padding-bottom:6mm;border-bottom:1px solid #9ca3af;}' +
     '.min-logo{min-height:20mm;display:flex;align-items:flex-start;justify-content:flex-start;}' +
     '.min-logo img{max-width:36mm;max-height:19mm;object-fit:contain;}' +
@@ -3093,36 +3160,10 @@ function previewDoc(projId, type, docNum) {
     '.signature-img{position:absolute;left:50%;top:-9.5mm;transform:translateX(-50%);max-width:38mm;max-height:14mm;object-fit:contain;}' +
     '.stamp-img{position:absolute;left:50%;top:-13mm;transform:translateX(-50%);max-width:38mm;max-height:20mm;object-fit:contain;opacity:.85;}' +
     '.payment-qr-box{margin-top:4mm;width:30mm;min-height:30mm;border:1px dashed rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;font-size:7.5px;color:#777;text-align:center;line-height:1.35;margin-left:auto;margin-right:auto;}' +
-    '@media print{body{background:#fff}.no-print{display:none!important}.mindoc{box-shadow:none;margin:0;width:210mm;min-height:297mm}.p-4{padding:0!important}@page{size:A4;margin:0}}' +
+    '@media print{body{background:#fff}.no-print{display:none!important}.mindoc-pages{padding:0;background:#fff}.mindoc-page{margin:0;page-break-after:always;break-after:page}.mindoc-page:last-child{page-break-after:auto;break-after:auto}.mindoc{box-shadow:none;margin:0;width:210mm;min-height:297mm}.p-4{padding:0!important}@page{size:A4;margin:0}}' +
     '</style>' +
-    '<div class="mindoc">' +
-      '<div class="min-head">' +
-        '<div class="min-logo">' + (companyLogo ? '<img src="' + companyLogo + '" alt="Company logo">' : '') + '</div>' +
-        '<div class="min-company"><b>' + esc(companyName) + '</b><br>' + esc(companyAddress) + '<br>Email : ' + esc(companyEmail) + ' &nbsp; Website : ' + esc(companyWeb) + ' &nbsp; Tel : ' + esc(companyTel) + ' &nbsp; Tax ID : ' + esc(companyTax) + '</div>' +
-      '</div>' +
-      '<div class="min-title"><div><h1>' + docTitle + '</h1><div class="th">' + docTitleTh + '</div></div>' +
-        '<div class="doc-meta"><div class="row"><span class="label">' + docCodeLabel + '</span><b>' + esc(docNum) + '</b></div><div class="row"><span class="label">Date</span><b>' + docDateText + '</b></div><div class="row"><span class="label">Reference</span><b>' + esc(referenceNo) + '</b></div></div>' +
-      '</div>' +
-      '<div class="info-grid">' +
-        '<div class="info-box"><div class="info-title">Bill To / ลูกค้า</div><div class="info-name">' + esc(clientName) + '</div><div class="info-text">' + htmlText(clientAddress || '-') + '<br>Tax ID: ' + esc(clientTax) + '</div></div>' +
-        '<div class="info-box"><div class="info-title">Document Details</div><div class="detail-grid">' +
-          '<div class="detail-item"><span class="label">Project</span><div class="detail-value">' + esc(quotationSubject) + '</div></div>' +
-          '<div class="detail-item"><span class="label">Attention</span><div class="detail-value">' + esc(attentionName) + '</div></div>' +
-          '<div class="detail-item"><span class="label">Payment Terms</span><div class="detail-value">' + esc(paymentTerms) + '</div></div>' +
-          '<div class="detail-item"><span class="label">Due / Valid</span><div class="detail-value">' + esc(type === 'REC' ? paidDateText : dueDateText) + '</div></div>' +
-        '</div></div>' +
-      '</div>' +
-      '<table class="items-min"><colgroup><col style="width:9mm"><col><col style="width:16mm"><col style="width:16mm"><col style="width:30mm"><col style="width:32mm"></colgroup><thead><tr><th>No.</th><th>Description / รายละเอียด</th><th style="text-align:center">Qty</th><th style="text-align:center">Unit</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Amount</th></tr></thead><tbody>' + bodyRows + '</tbody></table>' +
-      '<div class="lower-grid">' +
-        '<div class="note-box terms-red">' +
-          '<div class="block" style="border-top:none;padding-top:0;margin-top:0"><b>Remark / หมายเหตุ</b><br>' + htmlText(remarks) + '</div>' +
-          '<div class="block"><div class="terms-head">Payment Terms & Conditions</div><div>' + bankInfo + '</div></div>' +
-          '<div class="block"><div class="terms-head">Payment Schedule / งวดชำระ</div><table class="schedule"><colgroup><col style="width:22mm"><col style="width:38mm"><col style="width:25mm"><col style="width:28mm"><col style="width:22mm"></colgroup><thead><tr><th>Milestone</th><th>Description</th><th>Due Date</th><th class="right">Amount</th><th>Status</th></tr></thead><tbody>' + scheduleRows + '</tbody></table></div>' +
-        '</div>' +
-        '<div class="totals-qr-wrap"><table class="totals-min"><tr><td>Subtotal</td><td>' + fmt(subtotal) + '</td></tr><tr><td>VAT 7%</td><td>' + fmt(vatAmount) + '</td></tr>' + (whtRate ? '<tr><td>WHT ' + whtRate + '%</td><td>' + fmt(whtAmount) + '</td></tr>' : '') + '<tr class="total"><td>Total</td><td>' + fmt(totalAmount) + '</td></tr></table><div class="payment-qr-box">' + (companyPaymentQr ? '<img src="' + companyPaymentQr + '" alt="Payment QR" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:2mm;">' : 'QR CODE<br>PAYMENT') + '</div></div>' +
-      '</div>' +
-      '<div class="sign-grid-min"><div class="sign-min"><div class="sign-label">Client Acknowledgement</div><div class="sign-name">____________________________</div><div class="sign-role">Signature / Date</div></div><div class="sign-min">' + (companyStamp ? '<img class="stamp-img" src="' + companyStamp + '" alt="Company stamp">' : '') + (companySignature ? '<img class="signature-img" src="' + companySignature + '" alt="Signature">' : '') + '<div class="sign-label">Prepared By</div><div class="sign-name">' + esc(preparedByName) + '</div><div class="sign-role">' + esc(preparedByTitle) + '<br>' + docDateText + '</div></div></div>' +
-    '</div></div>';
+    '<div class="mindoc-pages">' + pagesHtml + '</div>' +
+    '</div>';
   if (window.lucide) lucide.createIcons();
   return true;
 }
