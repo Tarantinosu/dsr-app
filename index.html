@@ -2999,8 +2999,6 @@ function previewDoc(projId, type, docNum) {
 
   const scaledItems = items.map(function(it) { return Object.assign({}, it, { price: roundHU((Number(it.price) || 0) * instRatio) }); }).filter(function(it) { return (it.desc && it.desc.trim()) || (Number(it.price)||0) > 0; });
   const allRowsData = scaledItems.length ? scaledItems : [{ desc: project.project_name || '-', qty: 1, price: subtotal }];
-  const PAGE1_MAX = 14;
-  const PAGEN_MAX = 30;
 
   function makeRow(it, idx) {
     const qty = Number(it.qty || 0) || 0;
@@ -3069,33 +3067,8 @@ function previewDoc(projId, type, docNum) {
     '</div>' +
     '<div class="sign-grid-min"><div class="sign-min"><div class="sign-label">Client Acknowledgement</div><div class="sign-name">____________________________</div><div class="sign-role">Signature / Date</div></div><div class="sign-min">' + (companyStamp ? '<img class="stamp-img" src="' + companyStamp + '" alt="Company stamp">' : '') + (companySignature ? '<img class="signature-img" src="' + companySignature + '" alt="Signature">' : '') + '<div class="sign-label">Prepared By</div><div class="sign-name">' + esc(preparedByName) + '</div><div class="sign-role">' + esc(preparedByTitle) + '<br>' + docDateText + '</div></div></div>';
 
-  // Paginate items
-  var _remaining = allRowsData.slice();
-  var _chunks = [];
-  _chunks.push(_remaining.splice(0, PAGE1_MAX));
-  while (_remaining.length > 0) { _chunks.push(_remaining.splice(0, PAGEN_MAX)); }
-
-  var _rowOffset = 0;
-  var pagesHtml = _chunks.map(function(chunk, pi) {
-    var isFirst = pi === 0;
-    var isLast = pi === _chunks.length - 1;
-    var rowsHtml = chunk.map(function(it, i) { return makeRow(it, _rowOffset + i); }).join('');
-    _rowOffset += chunk.length;
-    return '<div class="mindoc-page"><div class="mindoc">' +
-      (isFirst ? _page1Header : _contHeader) +
-      makeItemTable(rowsHtml) +
-      (isLast ? _footer : '') +
-      '</div></div>';
-  }).join('');
-
-  const main = document.getElementById('main-content');
-  document.title = docTitle + ' No.' + docNum;
-  main.innerHTML = '<div class="p-4 fade-in">' +
-    '<div class="flex justify-between items-center mb-4 no-print">' +
-    '<button class="text-sm text-slate-400 hover:text-white flex items-center gap-1" onclick="navigate(\'documents\')"><i data-lucide="arrow-left" class="w-4 h-4"></i> กลับ</button>' +
-    '<button class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm" onclick="runPrintDialog()"><i data-lucide="printer" class="w-4 h-4 inline"></i> พิมพ์ / PDF</button>' +
-    '</div>' +
-    '<style>' +
+  // CSS extracted for both DOM measurement phase and final render
+  var _docCss =
     '.mindoc-pages{background:#f3f4f6;padding:8px 0;}' +
     '.mindoc-page{margin:0 auto 8px;}' +
     '.mindoc-page:last-child{margin-bottom:0;}' +
@@ -3160,8 +3133,93 @@ function previewDoc(projId, type, docNum) {
     '.signature-img{position:absolute;left:50%;top:-9.5mm;transform:translateX(-50%);max-width:38mm;max-height:14mm;object-fit:contain;}' +
     '.stamp-img{position:absolute;left:50%;top:-13mm;transform:translateX(-50%);max-width:38mm;max-height:20mm;object-fit:contain;opacity:.85;}' +
     '.payment-qr-box{margin-top:4mm;width:30mm;min-height:30mm;border:1px dashed rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;font-size:7.5px;color:#777;text-align:center;line-height:1.35;margin-left:auto;margin-right:auto;}' +
-    '@media print{body{background:#fff}.no-print{display:none!important}.mindoc-pages{padding:0;background:#fff}.mindoc-page{margin:0;page-break-after:always;break-after:page}.mindoc-page:last-child{page-break-after:auto;break-after:auto}.mindoc{box-shadow:none;margin:0;width:210mm;min-height:297mm}.p-4{padding:0!important}@page{size:A4;margin:0}}' +
-    '</style>' +
+    '@media print{body{background:#fff}.no-print{display:none!important}.mindoc-pages{padding:0;background:#fff}.mindoc-page{margin:0;page-break-after:always;break-after:page}.mindoc-page:last-child{page-break-after:auto;break-after:auto}.mindoc{box-shadow:none;margin:0;width:210mm;min-height:297mm}.p-4{padding:0!important}@page{size:A4;margin:0}}';
+
+  // DOM-based height measurement for accurate A4 pagination
+  var _a4mEl = document.createElement('div');
+  _a4mEl.style.cssText = 'position:fixed;left:-9999px;height:297mm;width:1px;';
+  document.body.appendChild(_a4mEl);
+  var _a4px = _a4mEl.offsetHeight || 1122;
+  document.body.removeChild(_a4mEl);
+
+  var _mb = document.createElement('div');
+  _mb.style.cssText = 'position:fixed;left:-9999px;top:0;visibility:hidden;pointer-events:none;';
+  document.body.appendChild(_mb);
+  var _mbSt = document.createElement('style');
+  _mbSt.textContent = _docCss + '.mindoc{min-height:0!important;}';
+  _mb.appendChild(_mbSt);
+
+  function _mMindoc(html) {
+    var d = document.createElement('div');
+    d.className = 'mindoc';
+    d.innerHTML = html;
+    _mb.appendChild(d);
+    return d;
+  }
+
+  var _p1OH = _mMindoc(_page1Header + makeItemTable('')).offsetHeight;
+  var _cOH = _mMindoc(_contHeader + makeItemTable('')).offsetHeight;
+  var _fH = _mMindoc(_footer).offsetHeight;
+  var _rHost = _mMindoc('<table class="items-min" style="margin-top:0">' + _itColHead + '<tbody>' + allRowsData.map(function(it, i) { return makeRow(it, i); }).join('') + '</tbody></table>');
+  var _rowHs = Array.prototype.map.call(_rHost.querySelectorAll('tbody tr'), function(tr) { return tr.offsetHeight || 40; });
+
+  document.body.removeChild(_mb);
+
+  // Greedy height-based split: items fill pages without overflowing A4 height
+  var _avail1 = Math.max(_a4px - _p1OH, 80);
+  var _availC = Math.max(_a4px - _cOH, 120);
+  var _pChunks = []; // [{s: startIdx, e: endIdx}]
+  var _cs = 0, _ch = 0, _ca = _avail1;
+
+  for (var _ri = 0; _ri < allRowsData.length; _ri++) {
+    var _rh = (_rowHs[_ri] || 40);
+    if (_cs < _ri && _ch + _rh > _ca) {
+      _pChunks.push({ s: _cs, e: _ri });
+      _cs = _ri; _ch = _rh; _ca = _availC;
+    } else { _ch += _rh; }
+  }
+  _pChunks.push({ s: _cs, e: allRowsData.length });
+
+  // Ensure footer fits on last page by trimming last chunk if needed
+  if (_fH > 0 && _pChunks.length > 0) {
+    var _lc = _pChunks[_pChunks.length - 1];
+    var _lcH = 0;
+    for (var _ri2 = _lc.s; _ri2 < _lc.e; _ri2++) _lcH += _rowHs[_ri2] || 40;
+    var _la = _pChunks.length === 1 ? _avail1 : _availC;
+    if (_lcH + _fH > _la) {
+      var _ke = _lc.s, _kh = 0, _lim = Math.max(_la - _fH, 0);
+      for (var _ri3 = _lc.s; _ri3 < _lc.e; _ri3++) {
+        var _rh3 = _rowHs[_ri3] || 40;
+        if (_kh + _rh3 > _lim) break;
+        _kh += _rh3; _ke = _ri3 + 1;
+      }
+      if (_ke > _lc.s) {
+        _pChunks[_pChunks.length - 1] = { s: _lc.s, e: _ke };
+        _pChunks.push({ s: _ke, e: _lc.e });
+      }
+    }
+  }
+
+  var pagesHtml = _pChunks.map(function(chunk, pi) {
+    var isFirst = pi === 0;
+    var isLast = pi === _pChunks.length - 1;
+    var rowsHtml = '';
+    for (var _ri = chunk.s; _ri < chunk.e; _ri++) rowsHtml += makeRow(allRowsData[_ri], _ri);
+    return '<div class="mindoc-page"><div class="mindoc">' +
+      (isFirst ? _page1Header : _contHeader) +
+      makeItemTable(rowsHtml) +
+      (isLast ? _footer : '') +
+      '</div></div>';
+  }).join('');
+
+  const main = document.getElementById('main-content');
+  document.title = docTitle + ' No.' + docNum;
+  main.innerHTML = '<div class="p-4 fade-in">' +
+    '<div class="flex justify-between items-center mb-4 no-print">' +
+    '<button class="text-sm text-slate-400 hover:text-white flex items-center gap-1" onclick="navigate(\'documents\')"><i data-lucide="arrow-left" class="w-4 h-4"></i> กลับ</button>' +
+    '<button class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm" onclick="runPrintDialog()"><i data-lucide="printer" class="w-4 h-4 inline"></i> พิมพ์ / PDF</button>' +
+    '</div>' +
+    '<style>' + _docCss + '</style>' +
     '<div class="mindoc-pages">' + pagesHtml + '</div>' +
     '</div>';
   if (window.lucide) lucide.createIcons();
