@@ -2096,7 +2096,7 @@ function renderInstallmentCard(inst, idx, q) {
     (canInvoice ? '<button class="px-2 py-1 bg-amber-700/50 text-amber-300 rounded text-xs hover:bg-amber-700" onclick="issueInvoice(\'' + inst.__backendId + '\')">ออก Invoice</button>' : '') +
     (canReceipt ? '<button class="px-2 py-1 bg-emerald-700/50 text-emerald-300 rounded text-xs hover:bg-emerald-700" onclick="issueReceipt(\'' + inst.__backendId + '\')">ออกใบเสร็จ</button>' : '') +
     (canPay ? '<button class="px-2 py-1 bg-orange-700/50 text-orange-300 rounded text-xs hover:bg-orange-700" onclick="markPaid(\'' + inst.__backendId + '\')">บันทึกชำระ</button>' : '') +
-    (inst.status !== 'paid' && inst.status !== 'void' ? '<button class="text-slate-500 hover:text-red-400 p-1" onclick="deleteInstRecord(\'' + inst.__backendId + '\')"><i data-lucide="trash-2" class="w-3 h-3"></i></button>' : '') +
+    (inst.status !== 'void' ? '<button class="text-slate-500 hover:text-red-400 p-1" title="ลบงวดงาน" onclick="deleteInstRecord(\'' + inst.__backendId + '\')"><i data-lucide="trash-2" class="w-3 h-3"></i></button>' : '') +
     '</div></div>';
 }
 
@@ -2135,9 +2135,19 @@ async function markPaid(id) {
 async function deleteInstRecord(id) {
   const rec = allData.find(r => r.__backendId === id);
   if (!rec) return;
-  showConfirm('ลบงวดงานนี้?', async function() {
+  const installmentNo = (rec.installment_index || 0) + 1;
+  const isPaid = rec.status === 'paid';
+  const confirmText = isPaid
+    ? 'ลบข้อมูลงวดที่ ' + installmentNo + ' ที่ชำระแล้ว?\n\nยอด ' + fmt(rec.amount || 0) + ' บาท จะถูกนำออกจากยอดรายรับ และ Receipt ของงวดนี้จะหายไป'
+    : 'ลบงวดงานที่ ' + installmentNo + '?';
+  showConfirm(confirmText, async function() {
     const r = await window.dataSdk.delete(rec);
-    if (r.isOk) showToast('ลบแล้ว');
+    if (r.isOk) {
+      showToast(isPaid ? 'ลบข้อมูลงวดที่ชำระแล้ว' : 'ลบงวดงานแล้ว');
+      await addLog(rec.project_id, isPaid ? 'ลบงวดที่ชำระแล้ว' : 'ลบงวดงาน', 'งวด ' + installmentNo + ' จำนวน ' + fmt(rec.amount || 0) + ' บาท');
+    } else {
+      showToast('เกิดข้อผิดพลาด กรุณาลองใหม่', 'error');
+    }
   });
 }
 
