@@ -2058,7 +2058,8 @@ function showInstallmentForm(projId) {
     '<div><label class="text-xs text-slate-400">ประเภท</label><select id="inst-type" class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white"><option value="percent">%</option><option value="fixed">จำนวนเงิน</option></select></div>' +
     '<div><label class="text-xs text-slate-400">ค่า</label><input id="inst-val" type="number" step="0.01" required class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white mono"></div>' +
     '<div><label class="text-xs text-slate-400">กำหนดชำระ</label><input id="inst-due" type="date" class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white"></div>' +
-    '<div class="flex items-end gap-2"><button type="submit" class="px-3 py-1.5 bg-orange-600 text-white rounded text-xs" id="inst-submit">เพิ่ม</button><button type="button" class="px-3 py-1.5 bg-slate-700 text-white rounded text-xs" onclick="document.getElementById(\'inst-form-area\').innerHTML=\'\'">ยกเลิก</button></div>' +
+    '<div class="col-span-4"><label class="text-xs text-slate-400">Condition / เงื่อนไขงวด</label><input id="inst-condition" type="text" placeholder="เช่น ชำระเมื่ออนุมัติแบบ Concept Design" class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white"></div>' +
+    '<div class="col-span-4 flex justify-end gap-2"><button type="submit" class="px-3 py-1.5 bg-orange-600 text-white rounded text-xs" id="inst-submit">เพิ่ม</button><button type="button" class="px-3 py-1.5 bg-slate-700 text-white rounded text-xs" onclick="document.getElementById(\'inst-form-area\').innerHTML=\'\'">ยกเลิก</button></div>' +
     '</form></div>';
 }
 
@@ -2076,6 +2077,7 @@ async function saveInstallment(e, projId) {
     installment_index: getInstallments(projId).length,
     split_type: type, split_value: val, amount: amount,
     due_date: document.getElementById('inst-due').value || '',
+    installment_condition: document.getElementById('inst-condition').value.trim(),
     status: 'draft', created_at: new Date().toISOString()
   });
   if (result.isOk) showToast('เพิ่มงวดงานสำเร็จ');
@@ -2088,16 +2090,26 @@ function renderInstallmentCard(inst, idx, q) {
   const canPay = inst.invoice_number && inst.status !== 'paid' && inst.status !== 'void';
   return '<div class="p-3 bg-slate-800/50 rounded-lg flex items-center gap-3 slide-in flex-wrap">' +
     '<div class="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-xs font-bold text-slate-300">' + (idx+1) + '</div>' +
-    '<div class="flex-1 min-w-0"><div class="text-sm text-white font-medium">งวดที่ ' + (idx+1) + (inst.split_type === 'percent' ? ' (' + inst.split_value + '%)' : '') + '</div>' +
-    '<div class="text-xs text-slate-500">กำหนด: ' + fmtDate(inst.due_date) + (inst.invoice_number ? ' · ' + inst.invoice_number : '') + (inst.receipt_number ? ' · ' + inst.receipt_number : '') + (inst.paid_date ? ' · ชำระ: ' + fmtDate(inst.paid_date) : '') + '</div></div>' +
+    '<div class="flex-1 min-w-[240px]"><div class="text-sm text-white font-medium">งวดที่ ' + (idx+1) + (inst.split_type === 'percent' ? ' (' + inst.split_value + '%)' : '') + '</div>' +
+    '<div class="text-xs text-slate-500">กำหนด: ' + fmtDate(inst.due_date) + (inst.invoice_number ? ' · ' + inst.invoice_number : '') + (inst.receipt_number ? ' · ' + inst.receipt_number : '') + (inst.paid_date ? ' · ชำระ: ' + fmtDate(inst.paid_date) : '') + '</div>' +
+    '<div class="mt-1 flex items-center gap-2"><span class="text-[11px] text-slate-500 shrink-0">Condition:</span><input type="text" value="' + esc(inst.installment_condition||'') + '" placeholder="เพิ่มเงื่อนไขงวด" class="w-full max-w-md px-2 py-1 bg-slate-900/70 border border-slate-700 rounded text-xs text-slate-300 focus:border-orange-500 focus:outline-none" onchange="updateInstallmentCondition(\'' + inst.__backendId + '\',this.value)"></div></div>' +
     '<div class="mono text-sm text-white font-medium">' + fmt(inst.amount||0) + '</div>' +
     '<span class="' + badgeClass(inst.status) + '">' + (inst.status||'draft') + '</span>' +
     '<div class="flex gap-1 flex-wrap">' +
     (canInvoice ? '<button class="px-2 py-1 bg-amber-700/50 text-amber-300 rounded text-xs hover:bg-amber-700" onclick="issueInvoice(\'' + inst.__backendId + '\')">ออก Invoice</button>' : '') +
     (canReceipt ? '<button class="px-2 py-1 bg-emerald-700/50 text-emerald-300 rounded text-xs hover:bg-emerald-700" onclick="issueReceipt(\'' + inst.__backendId + '\')">ออกใบเสร็จ</button>' : '') +
     (canPay ? '<button class="px-2 py-1 bg-orange-700/50 text-orange-300 rounded text-xs hover:bg-orange-700" onclick="markPaid(\'' + inst.__backendId + '\')">บันทึกชำระ</button>' : '') +
+    (inst.receipt_number ? '<button class="px-2 py-1 bg-sky-700/50 text-sky-300 rounded text-xs hover:bg-sky-700 flex items-center gap-1" title="ดาวน์โหลด Receipt" onclick="printDoc(\'' + inst.project_id + '\',\'REC\',\'' + inst.receipt_number + '\')"><i data-lucide="download" class="w-3 h-3"></i> Receipt</button>' : '') +
     (inst.status !== 'void' ? '<button class="text-slate-500 hover:text-red-400 p-1" title="ลบงวดงาน" onclick="deleteInstRecord(\'' + inst.__backendId + '\')"><i data-lucide="trash-2" class="w-3 h-3"></i></button>' : '') +
     '</div></div>';
+}
+
+async function updateInstallmentCondition(id, value) {
+  const inst = allData.find(r => r.__backendId === id);
+  if (!inst || (inst.installment_condition||'') === value.trim()) return;
+  const result = await window.dataSdk.update(Object.assign({}, inst, { installment_condition: value.trim() }));
+  if (result.isOk) showToast('บันทึก Condition แล้ว');
+  else showToast('บันทึก Condition ไม่สำเร็จ', 'error');
 }
 
 async function issueInvoice(id) {
@@ -2403,7 +2415,7 @@ function renderSplitCard(sp, q, project, installments, projId) {
   const useInstallments = partnerInsts.length > 0;
 
   let paySection = '';
-  if (sp.partner_paid) {
+  if (sp.partner_paid && !useInstallments) {
     paySection = '<div class="flex flex-wrap items-center gap-2 mt-2"><span class="text-xs text-emerald-400 flex items-center gap-1"><i data-lucide="check-circle" class="w-3 h-3"></i> จ่ายครบแล้ว ' + fmtDate(sp.partner_paid_date) + ' · Receipt ออกอัตโนมัติแล้ว</span><button class="px-2 py-1 bg-red-900/40 text-red-300 rounded text-xs hover:bg-red-900" onclick="previewWHT(\'' + sp.__backendId + '\')">WHT</button><button class="px-2 py-1 bg-sky-900/40 text-sky-300 rounded text-xs hover:bg-sky-900" onclick="previewPartnerReceipt(\'' + sp.__backendId + '\')">Receipt</button></div>';
   } else if (useInstallments) {
     const instRows = partnerInsts.map(function(inst, i) {
@@ -2426,7 +2438,7 @@ function renderSplitCard(sp, q, project, installments, projId) {
         (inst.paid
           ? '<span class="text-xs text-emerald-400 flex items-center gap-1 flex-shrink-0"><i data-lucide="check-circle" class="w-3 h-3"></i>' + fmtDate(inst.paid_date) + ' · Receipt ออกอัตโนมัติแล้ว</span><button class="px-2 py-1 bg-red-900/40 text-red-300 rounded text-xs hover:bg-red-900 flex-shrink-0" onclick="previewWHT(\'pinst:' + inst.__backendId + '\')">WHT</button><button class="px-2 py-1 bg-sky-900/40 text-sky-300 rounded text-xs hover:bg-sky-900 flex-shrink-0" onclick="previewPartnerReceipt(\'pinst:' + inst.__backendId + '\')">Receipt</button>'
           : '<button class="px-2 py-1 bg-emerald-700/60 text-emerald-300 rounded text-xs hover:bg-emerald-700 flex-shrink-0" onclick="payPartnerInst(\'' + inst.__backendId + '\')">สั่งจ่าย</button>') +
-        (!inst.paid ? '<button class="text-slate-600 hover:text-red-400 p-0.5 flex-shrink-0 ml-1" onclick="deletePartnerInst(\'' + inst.__backendId + '\')"><i data-lucide="x" class="w-3 h-3"></i></button>' : '<div class="w-5 ml-1"></div>') +
+        '<button class="text-slate-600 hover:text-red-400 p-0.5 flex-shrink-0 ml-1" title="' + (inst.paid ? 'ลบข้อมูลการจ่ายงวดนี้' : 'ลบงวดนี้') + '" onclick="deletePartnerInst(\'' + inst.__backendId + '\')"><i data-lucide="' + (inst.paid ? 'trash-2' : 'x') + '" class="w-3 h-3"></i></button>' +
         '</div>';
     }).join('');
     paySection =
@@ -2455,7 +2467,7 @@ function renderSplitCard(sp, q, project, installments, projId) {
     '<div class="text-xs text-slate-500">' + (sp.partner_share_type === 'percent' ? sp.partner_share_value + '% ของกำไร' : 'คงที่') + ' · WHT ' + (sp.partner_wht_rate||3) + '% (' + fmt(sp.partner_wht_amount||0) + ')' + (vatEnabled ? ' · <span class="text-sky-400">VAT ' + vatRate + '% (+' + fmt(vatAmt) + ')</span>' : '') + (totalExp > 0 ? ' · หักค่าใช้จ่าย ' + fmt(totalExp) : '') + '</div>' +
     '</div>' +
     '<div class="text-right flex-shrink-0"><div class="text-sm font-bold mono text-white">' + fmt(netTotal) + '</div><div class="text-xs text-slate-500">ยอดสุทธิ</div></div>' +
-    (!sp.partner_paid ? '<button class="text-slate-500 hover:text-red-400 p-1 flex-shrink-0" onclick="deleteSplitRecord(\'' + sp.__backendId + '\')"><i data-lucide="trash-2" class="w-3 h-3"></i></button>' : '') +
+    '<button class="text-slate-500 hover:text-red-400 p-1 flex-shrink-0" title="' + (sp.partner_paid ? 'ลบข้อมูลพาร์ทเนอร์ที่จ่ายแล้ว' : 'ลบพาร์ทเนอร์') + '" onclick="deleteSplitRecord(\'' + sp.__backendId + '\')"><i data-lucide="trash-2" class="w-3 h-3"></i></button>' +
     '</div>' +
     paySection +
     '</div>';
@@ -2603,10 +2615,19 @@ async function payPartnerInst(instId) {
 
 async function deletePartnerInst(instId) {
   const inst = allData.find(r => r.__backendId === instId);
-  if (!inst || inst.paid) return;
-  showConfirm('ลบงวดนี้?', async function() {
-    await window.dataSdk.delete(inst);
-    showToast('ลบแล้ว');
+  if (!inst) return;
+  const sp = allData.find(r => r.__backendId === inst.split_id);
+  const prompt = inst.paid
+    ? 'ลบข้อมูลการจ่ายงวดนี้?\nยอดจ่าย รวมถึง Receipt และ WHT ของงวดนี้จะหาย และสถานะพาร์ทเนอร์จะกลับเป็นยังจ่ายไม่ครบ'
+    : 'ลบงวดนี้?';
+  showConfirm(prompt, async function() {
+    const r = await window.dataSdk.delete(inst);
+    if (!r.isOk) { showToast('ลบไม่สำเร็จ', 'error'); return; }
+    if (inst.paid && sp) {
+      await window.dataSdk.update(Object.assign({}, sp, { partner_paid: false, partner_paid_date: '' }));
+      await addLog(inst.project_id, 'ลบการจ่ายงวดพาร์ทเนอร์', sp.partner_name + ' งวด ' + ((inst.inst_index||0)+1) + ' จำนวน ' + fmt(inst.net_amount||inst.amount||0) + ' บาท');
+    }
+    showToast(inst.paid ? 'ลบข้อมูลการจ่ายแล้ว' : 'ลบงวดแล้ว');
   });
 }
 
@@ -2627,9 +2648,21 @@ async function disbursePartner(id) {
 async function deleteSplitRecord(id) {
   const rec = allData.find(r => r.__backendId === id);
   if (!rec) return;
-  showConfirm('ลบพาร์ทเนอร์นี้?', async function() {
+  const partnerInsts = getPartnerInsts(id);
+  const hasPaidData = !!rec.partner_paid || partnerInsts.some(function(inst) { return !!inst.paid; });
+  const prompt = hasPaidData
+    ? 'ลบข้อมูลพาร์ทเนอร์ที่จ่ายแล้ว?\nงวดจ่ายทั้งหมด รวมถึง Receipt และ WHT ที่เกี่ยวข้องจะหาย และยอดรวมจะคำนวณใหม่'
+    : 'ลบพาร์ทเนอร์นี้?';
+  showConfirm(prompt, async function() {
+    for (const inst of partnerInsts) {
+      const deletedInst = await window.dataSdk.delete(inst);
+      if (!deletedInst.isOk) { showToast('ลบงวดพาร์ทเนอร์ไม่สำเร็จ', 'error'); return; }
+    }
     const r = await window.dataSdk.delete(rec);
-    if (r.isOk) showToast('ลบแล้ว');
+    if (r.isOk) {
+      showToast('ลบแล้ว');
+      await addLog(rec.project_id, hasPaidData ? 'ลบข้อมูลพาร์ทเนอร์ที่จ่ายแล้ว' : 'ลบพาร์ทเนอร์', rec.partner_name);
+    }
   });
 }
 
@@ -2727,6 +2760,7 @@ function renderDocuments(el) {
   const projects = getProjects();
   const selectedClient = window.docClientFilter || '';
   const selectedMonth  = window.docMonthFilter  || '';
+  const selectedDay    = window.docDayFilter    || '';
   const clients = Array.from(new Set(projects.map(function(p){ return p.client_name||''; }).filter(Boolean))).sort();
 
   const projectDocs = projects.map(function(p) {
@@ -2763,14 +2797,16 @@ function renderDocuments(el) {
   const months = Array.from(monthSet).sort().reverse();
   function monthLabel(v){ if(!v) return 'ทุกเดือน'; const parts=v.split('-'); const names=['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.']; return names[parseInt(parts[1],10)-1]+' '+(parseInt(parts[0],10)+543); }
   function docMonth(d){ if(!d.date) return ''; const dt=new Date(d.date); if(isNaN(dt.getTime())) return ''; return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0'); }
+  function docDay(d){ if(!d.date) return ''; const dt=new Date(d.date); if(isNaN(dt.getTime())) return ''; return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0'); }
 
   const filteredGroups = projectDocs.map(function(g){
     let docs=g.docs;
     if(selectedMonth) docs=docs.filter(function(d){ return docMonth(d)===selectedMonth; });
+    if(selectedDay) docs=docs.filter(function(d){ return docDay(d)===selectedDay; });
     return { project:g.project, docs:docs };
   }).filter(function(g){
     if(selectedClient && g.project.client_name!==selectedClient) return false;
-    return g.docs.length>0 || (!selectedMonth&&!selectedClient);
+    return g.docs.length>0 || (!selectedMonth&&!selectedDay&&!selectedClient);
   });
   const allFilteredDocs = filteredGroups.reduce(function(arr,g){ return arr.concat(g.docs); },[]);
   const partnerReceiptDocs = allFilteredDocs.filter(function(d){ return d.type==='PR'; });
@@ -2778,19 +2814,20 @@ function renderDocuments(el) {
   const clientReceiptDocs  = allFilteredDocs.filter(function(d){ return d.type==='REC'; });
   const extDocs            = allFilteredDocs.filter(function(d){ return d.type==='EXT'; });
 
-  el.innerHTML = '<div class="p-6 fade-in"><div class="flex items-center justify-between mb-1"><h1 class="text-2xl font-bold text-white">เอกสาร & พิมพ์</h1></div><p class="text-slate-400 text-sm mb-4">เลือกดูเอกสารตามลูกค้า หรือกรองตามรายเดือน</p>' +
+  el.innerHTML = '<div class="p-6 fade-in"><div class="flex items-center justify-between mb-1"><h1 class="text-2xl font-bold text-white">เอกสาร & พิมพ์</h1></div><p class="text-slate-400 text-sm mb-4">เลือกดูเอกสารตามลูกค้า เดือน หรือวันที่</p>' +
     '<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">' +
       '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">Partner Receipt</div><div class="mono text-2xl text-sky-400 font-bold">'+partnerReceiptDocs.length+'</div></div>' +
       '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">Partner WHT</div><div class="mono text-2xl text-red-400 font-bold">'+whtDocs.length+'</div></div>' +
       '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">Client Receipt</div><div class="mono text-2xl text-emerald-400 font-bold">'+clientReceiptDocs.length+'</div></div>' +
       '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">เอกสารภายนอก</div><div class="mono text-2xl text-purple-400 font-bold">'+extDocs.length+'</div></div>' +
     '</div>' +
-    '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-5"><div class="grid md:grid-cols-3 gap-3 items-end">' +
+    '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-5"><div class="grid md:grid-cols-4 gap-3 items-end">' +
       '<div><label class="text-xs text-slate-400">ลูกค้า</label><select class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" onchange="window.docClientFilter=this.value; renderDocuments(document.getElementById(\'main-content\'))">' +
         '<option value="">ทุกลูกค้า</option>' + clients.map(function(c){ return '<option value="'+esc(c)+'" '+(selectedClient===c?'selected':'')+'>'+esc(c)+'</option>'; }).join('') + '</select></div>' +
       '<div><label class="text-xs text-slate-400">เดือน</label><select class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" onchange="window.docMonthFilter=this.value; renderDocuments(document.getElementById(\'main-content\'))">' +
         '<option value="">ทุกเดือน</option>' + months.map(function(m){ return '<option value="'+m+'" '+(selectedMonth===m?'selected':'')+'>'+monthLabel(m)+'</option>'; }).join('') + '</select></div>' +
-      '<div class="flex gap-2"><button type="button" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm" onclick="window.docClientFilter=\'\';window.docMonthFilter=\'\';renderDocuments(document.getElementById(\'main-content\'))">ล้างตัวกรอง</button>' +
+      '<div><label class="text-xs text-slate-400">วันที่</label><input type="date" value="'+selectedDay+'" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" onchange="window.docDayFilter=this.value; renderDocuments(document.getElementById(\'main-content\'))"></div>' +
+      '<div class="flex gap-2"><button type="button" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm" onclick="window.docClientFilter=\'\';window.docMonthFilter=\'\';window.docDayFilter=\'\';renderDocuments(document.getElementById(\'main-content\'))">ล้างตัวกรอง</button>' +
       '<div class="text-xs text-slate-500 flex items-center">พบ ' + filteredGroups.reduce(function(s,g){ return s+g.docs.length; },0) + ' เอกสาร</div></div></div></div>' +
     '<div class="space-y-3">' +
     (projects.length===0 ? '<p class="text-slate-500 text-sm text-center py-8">ยังไม่มีโปรเจกต์</p>' :
@@ -3028,7 +3065,7 @@ function previewDoc(projId, type, docNum) {
   const scheduleRows = scheduleSource.map(function(inst, i) {
     const isCurrent = inst.__backendId && inst.__backendId === currentInstId;
     const amount = inst.amount || 0;
-    const desc = inst.installment_description || (inst.split_type === 'percent' ? (inst.split_value || 0) + '% of total' : 'Payment milestone');
+    const desc = inst.installment_condition || inst.installment_description || (inst.split_type === 'percent' ? (inst.split_value || 0) + '% of total' : 'Payment milestone');
     const status = type === 'REC' && isCurrent ? 'Paid' : (inst.status === 'paid' ? 'Paid' : inst.invoice_number ? 'Invoiced' : 'Pending');
     return '<tr class="' + (isCurrent ? 'current' : '') + '">' +
       '<td>งวดที่ ' + ((inst.installment_index != null ? inst.installment_index : i) + 1) + '</td>' +
