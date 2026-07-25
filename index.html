@@ -995,7 +995,164 @@ async function saveProject(e) {
   else { showToast('เกิดข้อผิดพลาด', 'error'); btn.disabled = false; btn.textContent = 'สร้าง'; }
 }
 
+async function editProjectName(projId) {
+  const project = allData.find(r => r.record_type === 'project' && r.project_id === projId);
+  if (!project) return;
+  const nextName = window.prompt('แก้ไขชื่อโปรเจกต์', project.project_name || '');
+  if (nextName === null) return;
+  const trimmedName = nextName.trim();
+  if (!trimmedName) {
+    showToast('กรุณาใส่ชื่อโปรเจกต์', 'error');
+    return;
+  }
+  if (trimmedName === (project.project_name || '')) return;
+  const oldName = project.project_name || 'Untitled';
+  const updated = Object.assign({}, project, { project_name: trimmedName });
+  const result = await window.dataSdk.update(updated);
+  if (result.isOk) {
+    showToast('แก้ไขชื่อโปรเจกต์แล้ว');
+    await addLog(projId, 'แก้ไขชื่อโปรเจกต์', oldName + ' → ' + trimmedName);
+  } else {
+    showToast('แก้ไขชื่อโปรเจกต์ไม่สำเร็จ', 'error');
+  }
+}
+
 function safeParseJSON(str) { try { return JSON.parse(str || '[]'); } catch { return []; } }
+
+function projectTimeline(project) {
+  const rows = safeParseJSON(project && project.timeline_json);
+  return Array.isArray(rows) ? rows : [];
+}
+
+function renderProjectProgress(project) {
+  const rows = projectTimeline(project);
+  const simpleRows = rows.length ? rows.map(function(row) {
+    const rowDate = row.timeline_date || row.start_date || row.end_date || '';
+    const rowText = row.timeline_note || row.title || row.note || 'บันทึกงาน';
+    const extraNote = row.timeline_note ? '' : (row.title && row.note ? row.note : '');
+    return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="flex items-start gap-3">' +
+      '<div class="w-24 shrink-0"><div class="text-xs text-slate-500">วันที่</div><div class="text-sm text-orange-400 mono mt-1">' + (rowDate ? fmtDate(rowDate) : 'ไม่ระบุ') + '</div></div>' +
+      '<div class="flex-1 min-w-0"><div class="text-sm text-white whitespace-pre-line">' + esc(rowText) + '</div>' +
+      (extraNote ? '<div class="text-xs text-slate-400 mt-2 whitespace-pre-line">' + esc(extraNote) + '</div>' : '') + '</div>' +
+      '<button class="p-1.5 text-slate-500 hover:text-red-400" title="ลบรายการ" onclick="deleteTimelineItem(\'' + project.project_id + '\',\'' + row.id + '\')"><i data-lucide="trash-2" class="w-4 h-4"></i></button>' +
+      '</div></div>';
+  }).join('') : '<div class="text-center text-sm text-slate-500 py-8">ยังไม่มีบันทึก Timeline</div>';
+  return '<div class="grid grid-cols-1 lg:grid-cols-3 gap-4">' +
+    '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4">' +
+      '<div class="text-sm font-semibold text-white mb-1">เพิ่มบันทึก Timeline</div><div class="text-xs text-slate-500 mb-3">บันทึกวันส่งงานหรือสิ่งที่ทำในแต่ละวัน</div>' +
+      '<div class="space-y-3"><div><label class="text-xs text-slate-500">วันที่</label><input id="timeline-date" type="date" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"></div>' +
+      '<textarea id="timeline-simple-note" rows="4" class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="เช่น ส่งแบบรอบแรกให้ลูกค้า / แก้ Layout ตามคอมเมนต์"></textarea>' +
+      '<button class="w-full px-3 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm" onclick="addSimpleTimelineItem(\'' + project.project_id + '\')"><i data-lucide="plus" class="w-4 h-4 inline mr-1"></i>เพิ่มบันทึก</button></div></div>' +
+    '<div class="lg:col-span-2"><div class="flex items-center justify-between mb-3"><div><h3 class="text-base font-semibold text-white">Timeline งาน</h3><div class="text-xs text-slate-500 mt-1">วันที่ส่งงานและบันทึกการทำงานของโครงการ</div></div><span class="text-xs text-slate-500">' + rows.length + ' รายการ</span></div>' +
+    '<div class="space-y-3">' + simpleRows + '</div></div></div>';
+}
+
+async function addSimpleTimelineItem(projId) {
+  const project = allData.find(r => r.record_type === 'project' && r.project_id === projId);
+  const timelineDate = document.getElementById('timeline-date').value;
+  const note = document.getElementById('timeline-simple-note').value.trim();
+  if (!project || !timelineDate || !note) { showToast('กรุณาเลือกวันที่และใส่บันทึก', 'error'); return; }
+  const rows = projectTimeline(project);
+  rows.push({ id: genId(), timeline_date: timelineDate, timeline_note: note });
+  rows.sort(function(a,b) { return (b.timeline_date || b.start_date || '').localeCompare(a.timeline_date || a.start_date || ''); });
+  const result = await window.dataSdk.update(Object.assign({}, project, { timeline_json: JSON.stringify(rows), progress_updated_at: new Date().toISOString() }));
+  if (result.isOk) { showToast('เพิ่มบันทึก Timeline แล้ว'); await addLog(projId, 'เพิ่มบันทึก Timeline', timelineDate + ' · ' + note); }
+  else showToast('เพิ่มบันทึกไม่สำเร็จ', 'error');
+}
+
+function renderProjectProgressLegacy(project) {
+  const rows = projectTimeline(project);
+  const progress = Math.max(0, Math.min(100, Number(project.project_progress) || 0));
+  const status = project.progress_status || 'กำลังดำเนินการ';
+  const statusOptions = ['ยังไม่เริ่ม','กำลังดำเนินการ','รอตรวจสอบ','ติดปัญหา','เสร็จสิ้น'];
+  const rowHtml = rows.length ? rows.map(function(row) {
+    const rowStatus = row.status || 'ยังไม่เริ่ม';
+    return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4">' +
+      '<div class="flex flex-col md:flex-row md:items-start gap-3">' +
+        '<div class="flex-1 min-w-0"><div class="font-medium text-white">' + esc(row.title || 'รายการงาน') + '</div>' +
+        '<div class="text-xs text-slate-500 mt-1">' + (row.start_date || 'ไม่ระบุ') + ' → ' + (row.end_date || 'ไม่ระบุ') + '</div>' +
+        (row.note ? '<div class="text-xs text-slate-400 mt-2 whitespace-pre-line">' + esc(row.note) + '</div>' : '') + '</div>' +
+        '<div class="flex items-center gap-2">' +
+          '<select class="px-2 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white" onchange="updateTimelineStatus(\'' + project.project_id + '\',\'' + row.id + '\',this.value)">' +
+          statusOptions.map(function(s) { return '<option value="' + s + '"' + (s === rowStatus ? ' selected' : '') + '>' + s + '</option>'; }).join('') + '</select>' +
+          '<button class="p-1.5 text-slate-500 hover:text-red-400" title="ลบรายการ" onclick="deleteTimelineItem(\'' + project.project_id + '\',\'' + row.id + '\')"><i data-lucide="trash-2" class="w-4 h-4"></i></button>' +
+        '</div>' +
+      '</div></div>';
+  }).join('') : '<div class="text-center text-sm text-slate-500 py-8">ยังไม่มีรายการใน Timeline</div>';
+
+  return '<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-5">' +
+    '<div class="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-4">' +
+      '<div class="flex justify-between items-center mb-3"><div class="text-sm font-semibold text-white">ความคืบหน้าโดยรวม</div><div class="mono text-xl font-bold text-orange-400" id="progress-value">' + progress + '%</div></div>' +
+      '<input id="project-progress-input" type="range" min="0" max="100" step="1" value="' + progress + '" class="w-full accent-orange-500" oninput="document.getElementById(\'progress-value\').textContent=this.value+\'%\'">' +
+      '<div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">' +
+        '<div><label class="text-xs text-slate-400">สถานะล่าสุด</label><select id="project-progress-status" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white">' +
+        statusOptions.map(function(s) { return '<option value="' + s + '"' + (s === status ? ' selected' : '') + '>' + s + '</option>'; }).join('') + '</select></div>' +
+        '<div><label class="text-xs text-slate-400">อัปเดตล่าสุด</label><div class="mt-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-400">' + (project.progress_updated_at ? fmtDate(project.progress_updated_at) : 'ยังไม่มีข้อมูล') + '</div></div>' +
+      '</div>' +
+      '<div class="mt-3"><label class="text-xs text-slate-400">สรุปความคืบหน้า / ปัญหาที่พบ</label><textarea id="project-progress-note" rows="3" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="เช่น แบบรอบ 2 รอลูกค้าอนุมัติ">' + esc(project.progress_note || '') + '</textarea></div>' +
+      '<div class="flex justify-end mt-3"><button class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm" onclick="saveProjectProgress(\'' + project.project_id + '\')">บันทึกความคืบหน้า</button></div>' +
+    '</div>' +
+    '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4">' +
+      '<div class="text-sm font-semibold text-white mb-3">เพิ่ม Timeline</div>' +
+      '<div class="space-y-3"><input id="timeline-title" class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="ชื่องาน / Milestone">' +
+      '<div class="grid grid-cols-2 gap-2"><div><label class="text-xs text-slate-500">เริ่ม</label><input id="timeline-start" type="date" class="w-full mt-1 px-2 py-2 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white"></div><div><label class="text-xs text-slate-500">กำหนดเสร็จ</label><input id="timeline-end" type="date" class="w-full mt-1 px-2 py-2 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white"></div></div>' +
+      '<textarea id="timeline-note" rows="2" class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="รายละเอียดเพิ่มเติม"></textarea>' +
+      '<button class="w-full px-3 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm" onclick="addTimelineItem(\'' + project.project_id + '\')"><i data-lucide="plus" class="w-4 h-4 inline mr-1"></i>เพิ่มรายการ</button></div>' +
+    '</div></div>' +
+    '<div class="flex items-center justify-between mb-3"><div><h3 class="text-base font-semibold text-white">Project Timeline</h3><div class="text-xs text-slate-500 mt-1">อัปเดตสถานะของแต่ละช่วงงานได้ตลอดเวลา</div></div><span class="text-xs text-slate-500">' + rows.length + ' รายการ</span></div>' +
+    '<div class="space-y-3">' + rowHtml + '</div>';
+}
+
+async function saveProjectProgress(projId) {
+  const project = allData.find(r => r.record_type === 'project' && r.project_id === projId);
+  if (!project) return;
+  const progress = Number(document.getElementById('project-progress-input').value) || 0;
+  const status = document.getElementById('project-progress-status').value;
+  const note = document.getElementById('project-progress-note').value.trim();
+  const result = await window.dataSdk.update(Object.assign({}, project, {
+    project_progress: progress, progress_status: status, progress_note: note,
+    progress_updated_at: new Date().toISOString()
+  }));
+  if (result.isOk) {
+    showToast('บันทึกความคืบหน้าแล้ว');
+    await addLog(projId, 'อัปเดตความคืบหน้า', progress + '% · ' + status);
+  } else showToast('บันทึกไม่สำเร็จ', 'error');
+}
+
+async function addTimelineItem(projId) {
+  const project = allData.find(r => r.record_type === 'project' && r.project_id === projId);
+  const title = document.getElementById('timeline-title').value.trim();
+  if (!project || !title) { showToast('กรุณาใส่ชื่อรายการ', 'error'); return; }
+  const rows = projectTimeline(project);
+  rows.push({ id: genId(), title: title, start_date: document.getElementById('timeline-start').value, end_date: document.getElementById('timeline-end').value, note: document.getElementById('timeline-note').value.trim(), status: 'ยังไม่เริ่ม' });
+  const result = await window.dataSdk.update(Object.assign({}, project, { timeline_json: JSON.stringify(rows), progress_updated_at: new Date().toISOString() }));
+  if (result.isOk) { showToast('เพิ่ม Timeline แล้ว'); await addLog(projId, 'เพิ่ม Timeline', title); }
+  else showToast('เพิ่มรายการไม่สำเร็จ', 'error');
+}
+
+async function updateTimelineStatus(projId, rowId, status) {
+  const project = allData.find(r => r.record_type === 'project' && r.project_id === projId);
+  if (!project) return;
+  const rows = projectTimeline(project);
+  const row = rows.find(function(r) { return r.id === rowId; });
+  if (!row) return;
+  row.status = status;
+  const result = await window.dataSdk.update(Object.assign({}, project, { timeline_json: JSON.stringify(rows), progress_updated_at: new Date().toISOString() }));
+  if (result.isOk) { showToast('อัปเดตสถานะแล้ว'); await addLog(projId, 'อัปเดต Timeline', row.title + ' · ' + status); }
+  else showToast('อัปเดตไม่สำเร็จ', 'error');
+}
+
+function deleteTimelineItem(projId, rowId) {
+  const project = allData.find(r => r.record_type === 'project' && r.project_id === projId);
+  if (!project) return;
+  const rows = projectTimeline(project);
+  const row = rows.find(function(r) { return r.id === rowId; });
+  showConfirm('ลบรายการ Timeline “' + ((row && row.title) || '') + '” หรือไม่?', async function() {
+    const result = await window.dataSdk.update(Object.assign({}, project, { timeline_json: JSON.stringify(rows.filter(function(r) { return r.id !== rowId; })), progress_updated_at: new Date().toISOString() }));
+    if (result.isOk) { showToast('ลบรายการแล้ว'); await addLog(projId, 'ลบ Timeline', (row && row.title) || ''); }
+    else showToast('ลบไม่สำเร็จ', 'error');
+  });
+}
 
 async function markProjectDone(projId, e) {
   e.stopPropagation();
@@ -1672,12 +1829,13 @@ function renderProjectDetail(el, projId) {
 
   el.innerHTML = '<div class="p-6 fade-in">' +
     '<button class="text-sm text-slate-400 hover:text-white mb-4 flex items-center gap-1" onclick="navigate(\'projects\')"><i data-lucide="arrow-left" class="w-4 h-4"></i> กลับ</button>' +
-    '<div class="flex justify-between items-start mb-6"><div><h1 class="text-2xl font-bold text-white">' + (project.project_name||'Untitled') + '</h1><p class="text-slate-400 text-sm">ลูกค้า: ' + (project.client_name||'-') + ' · Fixed Cost: ' + fmt(project.fixed_cost||0) + ' บาท</p></div>' +
+    '<div class="flex justify-between items-start mb-6"><div><div class="flex items-center gap-2"><h1 class="text-2xl font-bold text-white">' + (project.project_name||'Untitled') + '</h1><button type="button" class="p-1 text-slate-500 hover:text-orange-400 rounded" title="แก้ไขชื่อโปรเจกต์" aria-label="แก้ไขชื่อโปรเจกต์" onclick="editProjectName(\'' + projId + '\')"><i data-lucide="pencil" class="w-4 h-4"></i></button></div><p class="text-slate-400 text-sm">ลูกค้า: ' + (project.client_name||'-') + ' · Fixed Cost: ' + fmt(project.fixed_cost||0) + ' บาท</p></div>' +
     '<div class="flex items-center gap-2">' + (showDoneBtn ? '<button class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="markProjectDone(\'' + projId + '\',event)"><i data-lucide="check-circle" class="w-4 h-4"></i> เสร็จสิ้น</button>' : '') + '<span class="' + badgeClass(displayStatus) + '">' + displayStatus + '</span></div></div>' +
     '<div class="flex gap-1 border-b border-slate-800 mb-4">' +
     '<button class="tab-btn active" onclick="showTab(\'qt\',this)">ใบเสนอราคา</button>' +
     '<button class="tab-btn" onclick="showTab(\'split\',this)">พาร์ทเนอร์ (' + splits.length + ')</button>' +
     '<button class="tab-btn" onclick="showTab(\'exp\',this)">ค่าใช้จ่าย</button>' +
+    '<button class="tab-btn" onclick="showTab(\'progress\',this)">Timeline งาน</button>' +
     '</div>' +
 
     '<div id="tab-qt">' +
@@ -1726,19 +1884,20 @@ function renderProjectDetail(el, projId) {
       '<p class="text-slate-500 text-sm text-center py-4">ยังไม่มีค่าใช้จ่าย</p>' :
       byType('project_expense').filter(function(e) { return e.project_id === projId; }).map(function(exp) { return renderExpenseCard(exp, projId); }).join('')) +
     '</div></div>' +
+    '<div id="tab-progress" style="display:none">' + renderProjectProgress(project) + '</div>' +
     '</div>';
 
   // restore active tab after re-render
   if (_activeTab && _activeTab !== 'qt') {
     const tabEl = document.getElementById('tab-' + _activeTab);
     if (tabEl) {
-      ['qt','inst','split','exp'].forEach(function(t) {
+      ['qt','inst','split','exp','progress'].forEach(function(t) {
         const el = document.getElementById('tab-' + t);
         if (el) el.style.display = t === _activeTab ? '' : 'none';
       });
       const tabBtns = document.querySelectorAll('.tab-btn');
       tabBtns.forEach(function(b) { b.classList.remove('active'); });
-      const idx = ['qt','inst','split','exp'].indexOf(_activeTab);
+      const idx = ['qt','split','exp','progress'].indexOf(_activeTab);
       if (tabBtns[idx]) tabBtns[idx].classList.add('active');
     }
   }
@@ -1746,7 +1905,7 @@ function renderProjectDetail(el, projId) {
 
 function showTab(tab, btn) {
   _activeTab = tab;
-  ['qt','inst','split','exp'].forEach(function(t) {
+  ['qt','inst','split','exp','progress'].forEach(function(t) {
     const el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === tab ? '' : 'none';
   });
@@ -1772,10 +1931,34 @@ function _qtCalc(state) {
   var q = state.q, wr = q.client_wht_rate||0, vat, wht, tot;
   if (q.vat_mode==='excluded') {
     vat=roundHU(sub*.07); wht=roundHU(sub*wr/100); tot=roundHU(sub+vat-wht);
-  } else {
+  } else if (q.vat_mode==='included') {
     var s0=roundHU(sub/1.07); vat=roundHU(sub-s0); wht=roundHU(s0*wr/100); tot=roundHU(sub-wht);
+  } else {
+    vat=0; wht=roundHU(sub*wr/100); tot=roundHU(sub-wht);
   }
   return {sub:sub,vat:vat,wht:wht,tot:tot};
+}
+
+function _qtItemNumbers(items) {
+  var main = 0, sub = 0;
+  return items.map(function(it) {
+    if (it.level === 'sub') {
+      if (!main) main = 1;
+      sub += 1;
+      return main + '.' + sub;
+    }
+    main += 1;
+    sub = 0;
+    return String(main);
+  });
+}
+
+function _qtRebuildRows(qId, locked) {
+  var st = _qt[qId], tbody = document.getElementById('qt-tbody-'+qId);
+  if (!st || !tbody) return;
+  tbody.innerHTML = '';
+  st.items.forEach(function(it,i){ tbody.appendChild(_qtBuildRow(qId,it,i,!!locked)); });
+  if(window.lucide) lucide.createIcons();
 }
 
 function _qtRefreshTotals(qId) {
@@ -1783,6 +1966,8 @@ function _qtRefreshTotals(qId) {
   var c = _qtCalc(st);
   var g = function(id,v){var e=document.getElementById(id);if(e)e.textContent=fmt(v);};
   g('qt-sub-'+qId,c.sub); g('qt-vat-'+qId,c.vat); g('qt-wht-'+qId,c.wht); g('qt-tot-'+qId,c.tot);
+  var vatLabel = document.getElementById('qt-vat-label-'+qId);
+  if (vatLabel) vatLabel.textContent = st.q.vat_mode === 'none' ? 'VAT (ไม่คิด)' : 'VAT 7%';
   return c;
 }
 
@@ -1806,13 +1991,20 @@ function _qtBuildRow(qId, it, i, locked) {
   var tr = document.createElement('tr');
   tr.className = 'border-b border-slate-800';
   tr.dataset.row = i;
+  var st = _qt[qId];
+  var rowNo = _qtItemNumbers(st ? st.items : [it])[i] || String(i+1);
   var ic = locked ? '' : ' oninput="window._qtInput(this)"';
   var dis = locked ? ' disabled' : '';
   tr.innerHTML =
-    '<td class="py-2 pr-2 text-slate-500 w-6">'+(i+1)+'</td>'+
+    '<td class="py-2 pr-2 text-slate-500 w-10 mono align-top pt-3">'+rowNo+'</td>'+
     '<td class="py-2 pr-2">'+
+      '<select class="mb-1 bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-300 outline-none" data-qid="'+qId+'" data-idx="'+i+'" data-field="level" onchange="window._qtInput(this)"'+dis+'>'+
+        '<option value="main"'+(it.level!=='sub'?' selected':'')+'>หัวข้อหลัก</option>'+
+        '<option value="sub"'+(it.level==='sub'?' selected':'')+'>หัวข้อย่อย 1.1</option>'+
+      '</select>'+
       '<input class="bg-transparent border-b border-slate-700 w-full text-white text-sm focus:border-orange-500 outline-none"'+
-      ' value="'+esc(it.desc||'')+'" data-qid="'+qId+'" data-idx="'+i+'" data-field="desc"'+ic+dis+'></td>'+
+      ' value="'+esc(it.desc||'')+'" placeholder="ชื่อรายการ" data-qid="'+qId+'" data-idx="'+i+'" data-field="desc"'+ic+dis+'>'+
+      '<textarea rows="2" class="mt-1 bg-slate-950/40 border border-slate-800 rounded px-2 py-1.5 w-full text-slate-400 text-xs focus:border-orange-500 outline-none resize-y" placeholder="รายละเอียดเพิ่มเติมของรายการนี้" data-qid="'+qId+'" data-idx="'+i+'" data-field="detail"'+ic+dis+'>'+esc(it.detail||'')+'</textarea></td>'+
     '<td class="py-2 pr-2 w-20">'+
       '<input type="number" step="1"'+
       ' class="bg-transparent border-b border-slate-700 w-full text-right mono text-white text-sm focus:border-orange-500 outline-none"'+
@@ -1831,7 +2023,10 @@ function _qtBuildRow(qId, it, i, locked) {
 window._qtInput = function(inp) {
   var qId=inp.dataset.qid, idx=parseInt(inp.dataset.idx), field=inp.dataset.field;
   var st=_qt[qId]; if(!st) return;
-  st.items[idx][field] = field==='desc' ? inp.value : (parseFloat(inp.value)||0);
+  st.items[idx][field] = (field==='desc' || field==='detail' || field==='level') ? inp.value : (parseFloat(inp.value)||0);
+  if (field === 'level') {
+    _qtRebuildRows(qId, false);
+  }
   var rowTd=document.getElementById('qt-row-'+qId+'-'+idx);
   if(rowTd) rowTd.textContent=fmt((st.items[idx].qty||0)*(st.items[idx].price||0));
   _qtRefreshTotals(qId);
@@ -1841,17 +2036,7 @@ window._qtInput = function(inp) {
 window._qtRemove = function(qId, idx) {
   var st=_qt[qId]; if(!st) return;
   st.items.splice(idx,1);
-  var tbody=document.getElementById('qt-tbody-'+qId); if(!tbody) return;
-  var rows=tbody.querySelectorAll('tr'); if(rows[idx]) rows[idx].remove();
-  tbody.querySelectorAll('tr').forEach(function(tr,i){
-    tr.dataset.row=i;
-    var num=tr.querySelector('td:first-child'); if(num) num.textContent=i+1;
-    tr.querySelectorAll('input[data-idx]').forEach(function(inp){inp.dataset.idx=i;});
-    var btn=tr.querySelector('button[onclick]');
-    if(btn) btn.setAttribute('onclick','window._qtRemove(\''+qId+'\','+i+')');
-    var td=tr.querySelector('td[id^="qt-row-"]');
-    if(td) td.id='qt-row-'+qId+'-'+i;
-  });
+  _qtRebuildRows(qId, false);
   _qtRefreshTotals(qId);
   _qtSave(qId);
 };
@@ -1859,7 +2044,7 @@ window._qtRemove = function(qId, idx) {
 function addQtItem(qId) {
   var st=_qt[qId]; if(!st) return;
   var idx=st.items.length;
-  st.items.push({desc:'',qty:1,price:0});
+  st.items.push({desc:'',detail:'',level:'main',qty:1,price:0});
   var tbody=document.getElementById('qt-tbody-'+qId); if(!tbody) return;
   var tr=_qtBuildRow(qId,st.items[idx],idx,false);
   tbody.appendChild(tr);
@@ -1893,6 +2078,7 @@ function renderQuotationEditor(q, items, locked, projId) {
     '<div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3">'+
       '<div class="text-xs font-semibold text-slate-300 mb-2 uppercase tracking-wide">เงื่อนไขเพิ่มเติม</div>'+
       '<div><label class="text-[11px] text-slate-400">Payment Terms</label><input class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white" value="'+esc(q.payment_terms_text||'Payment due within 7 days')+'" onchange="updateQuotationMeta(\''+qId+'\',\'payment_terms_text\',this.value)"'+(locked?' disabled':'')+'>'+
+      '</div><div class="mt-2"><label class="text-[11px] text-slate-400">ข้อมูลบัญชี / Bank Info</label><textarea rows="3" class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white" onchange="updateQuotationMeta(\''+qId+'\',\'bank_info_text\',this.value)"'+(locked?' disabled':'')+'>'+esc(q.bank_info_text||String(cfg.company_bank_info||defaultConfig.company_bank_info||'').replace(/<br\s*\/?>/gi,'\n'))+'</textarea>'+
       '</div><div class="mt-2"><label class="text-[11px] text-slate-400">หมายเหตุ / Remark</label><textarea rows="3" class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white" onchange="updateQuotationMeta(\''+qId+'\',\'remark_text\',this.value)"'+(locked?' disabled':'')+'>'+esc(q.remark_text||'')+'</textarea>'+
       '</div></div></div>';
 
@@ -1909,7 +2095,8 @@ function renderQuotationEditor(q, items, locked, projId) {
         '<div class="flex items-center gap-2"><label class="text-xs text-slate-400">VAT:</label>'+
         '<select class="px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white"'+(locked?' disabled':'')+' onchange="updateVATMode(\''+qId+'\',this.value)">'+
         '<option value="included"'+(q.vat_mode==='included'?' selected':'')+'>รวม VAT</option>'+
-        '<option value="excluded"'+(q.vat_mode==='excluded'?' selected':'')+'>แยก VAT</option></select></div>'+
+        '<option value="excluded"'+(q.vat_mode==='excluded'?' selected':'')+'>แยก VAT</option>'+
+        '<option value="none"'+(q.vat_mode==='none'?' selected':'')+'>ไม่คิด VAT</option></select></div>'+
         '<div class="flex items-center gap-2"><label class="text-xs text-slate-400">หัก ณ ที่จ่าย:</label>'+
         '<select class="px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white"'+(locked?' disabled':'')+' onchange="updateClientWHT(\''+qId+'\',this.value)">'+
         '<option value="0"'+((q.client_wht_rate||0)===0?' selected':'')+'>0%</option>'+
@@ -1931,7 +2118,7 @@ function renderQuotationEditor(q, items, locked, projId) {
     (!locked?'<button type="button" class="mt-2 text-xs text-orange-400 hover:text-orange-300 flex items-center gap-1" onclick="addQtItem(\''+qId+'\')"><i data-lucide="plus" class="w-3 h-3"></i> เพิ่มรายการ</button>':'')+
     '<div class="mt-4 pt-3 border-t border-slate-700 space-y-1">'+
       '<div class="flex justify-between text-sm"><span class="text-slate-400">Sub-total</span><span class="mono text-white" id="qt-sub-'+qId+'">'+fmt(c.sub)+'</span></div>'+
-      '<div class="flex justify-between text-sm"><span class="text-slate-400">VAT 7%</span><span class="mono text-white" id="qt-vat-'+qId+'">'+fmt(c.vat)+'</span></div>'+
+      '<div class="flex justify-between text-sm"><span class="text-slate-400" id="qt-vat-label-'+qId+'">'+(q.vat_mode==='none'?'VAT (ไม่คิด)':'VAT 7%')+'</span><span class="mono text-white" id="qt-vat-'+qId+'">'+fmt(c.vat)+'</span></div>'+
       '<div class="flex justify-between text-sm"><span class="text-slate-400">หัก ณ ที่จ่าย '+(q.client_wht_rate||0)+'%</span><span class="mono text-amber-400" id="qt-wht-'+qId+'">'+fmt(c.wht)+'</span></div>'+
       '<div class="flex justify-between text-base font-bold"><span class="text-white">Grand Total</span><span class="mono text-emerald-400" id="qt-tot-'+qId+'">'+fmt(c.tot)+'</span></div>'+
     '</div></div>';
@@ -1989,10 +2176,14 @@ async function recalcQuotation(q, items) {
     vatAmount = roundHU(subtotal * 0.07);
     whtAmount = roundHU(subtotal * (q.client_wht_rate||0) / 100);
     grandTotal = roundHU(subtotal + vatAmount - whtAmount);
-  } else {
+  } else if (q.vat_mode === 'included') {
     const subNoVat = roundHU(subtotal / 1.07);
     vatAmount = roundHU(subtotal - subNoVat);
     whtAmount = roundHU(subNoVat * (q.client_wht_rate||0) / 100);
+    grandTotal = roundHU(subtotal - whtAmount);
+  } else {
+    vatAmount = 0;
+    whtAmount = roundHU(subtotal * (q.client_wht_rate||0) / 100);
     grandTotal = roundHU(subtotal - whtAmount);
   }
   const updated = Object.assign({}, q, { items_json: JSON.stringify(items), subtotal: subtotal, vat_amount: vatAmount, client_wht_rate: (q.client_wht_rate||0), client_wht_amount: whtAmount, grand_total: grandTotal });
@@ -2088,6 +2279,7 @@ function renderInstallmentCard(inst, idx, q) {
   const canInvoice = !inst.invoice_number && inst.status !== 'void';
   const canReceipt = inst.invoice_number && !inst.receipt_number && inst.status !== 'void';
   const canPay = inst.invoice_number && inst.status !== 'paid' && inst.status !== 'void';
+  const quotationNumber = q && q.doc_number ? q.doc_number : '';
   return '<div class="p-3 bg-slate-800/50 rounded-lg flex items-center gap-3 slide-in flex-wrap">' +
     '<div class="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-xs font-bold text-slate-300">' + (idx+1) + '</div>' +
     '<div class="flex-1 min-w-[240px]"><div class="text-sm text-white font-medium">งวดที่ ' + (idx+1) + (inst.split_type === 'percent' ? ' (' + inst.split_value + '%)' : '') + '</div>' +
@@ -2099,7 +2291,9 @@ function renderInstallmentCard(inst, idx, q) {
     (canInvoice ? '<button class="px-2 py-1 bg-amber-700/50 text-amber-300 rounded text-xs hover:bg-amber-700" onclick="issueInvoice(\'' + inst.__backendId + '\')">ออก Invoice</button>' : '') +
     (canReceipt ? '<button class="px-2 py-1 bg-emerald-700/50 text-emerald-300 rounded text-xs hover:bg-emerald-700" onclick="issueReceipt(\'' + inst.__backendId + '\')">ออกใบเสร็จ</button>' : '') +
     (canPay ? '<button class="px-2 py-1 bg-orange-700/50 text-orange-300 rounded text-xs hover:bg-orange-700" onclick="markPaid(\'' + inst.__backendId + '\')">บันทึกชำระ</button>' : '') +
-    (inst.receipt_number ? '<button class="px-2 py-1 bg-sky-700/50 text-sky-300 rounded text-xs hover:bg-sky-700 flex items-center gap-1" title="ดาวน์โหลด Receipt" onclick="printDoc(\'' + inst.project_id + '\',\'REC\',\'' + inst.receipt_number + '\')"><i data-lucide="download" class="w-3 h-3"></i> Receipt</button>' : '') +
+    (quotationNumber ? '<button class="px-2 py-1 bg-slate-700/70 text-slate-200 rounded text-xs hover:bg-slate-600 flex items-center gap-1" title="ดูใบเสนอราคา" onclick="previewDoc(\'' + inst.project_id + '\',\'QT\',\'' + quotationNumber + '\')"><i data-lucide="file-text" class="w-3 h-3"></i> ใบเสนอราคา</button>' : '') +
+    (inst.invoice_number ? '<button class="px-2 py-1 bg-amber-700/40 text-amber-300 rounded text-xs hover:bg-amber-700 flex items-center gap-1" title="ดู Invoice" onclick="previewDoc(\'' + inst.project_id + '\',\'INV\',\'' + inst.invoice_number + '\')"><i data-lucide="eye" class="w-3 h-3"></i> Invoice</button>' : '') +
+    (inst.receipt_number ? '<button class="px-2 py-1 bg-sky-700/50 text-sky-300 rounded text-xs hover:bg-sky-700 flex items-center gap-1" title="ดูใบเสร็จ" onclick="previewDoc(\'' + inst.project_id + '\',\'REC\',\'' + inst.receipt_number + '\')"><i data-lucide="eye" class="w-3 h-3"></i> ใบเสร็จ</button>' : '') +
     (inst.status !== 'void' ? '<button class="text-slate-500 hover:text-red-400 p-1" title="ลบงวดงาน" onclick="deleteInstRecord(\'' + inst.__backendId + '\')"><i data-lucide="trash-2" class="w-3 h-3"></i></button>' : '') +
     '</div></div>';
 }
@@ -3025,7 +3219,7 @@ function previewDoc(projId, type, docNum) {
   const companySignature = getAssetValue('company_signature_data');
   const companyStamp = getAssetValue('company_stamp_data');
   const companyPaymentQr = getAssetValue('company_payment_qr_data');
-  const bankInfo = cfg.company_bank_info || defaultConfig.company_bank_info || 'The Siam Commercial Bank (SWIFT CODE): SICOTHBK.<br>DOPIOUS LIMITED PARTNERSHIP Bank account No. 427-081747-7';
+  const bankInfo = q.bank_info_text || String(cfg.company_bank_info || defaultConfig.company_bank_info || 'The Siam Commercial Bank (SWIFT CODE): SICOTHBK.<br>DOPIOUS LIMITED PARTNERSHIP Bank account No. 427-081747-7').replace(/<br\s*\/?>/gi, '\n');
   const clientName = project.client_name || '-';
   const clientAddress = client && client.address ? client.address : '';
   const clientTax = client && client.tax_id ? client.tax_id : '-';
@@ -3044,16 +3238,17 @@ function previewDoc(projId, type, docNum) {
   const whtAmount = type === 'QT' ? (q.client_wht_amount || 0) : roundHU((q.client_wht_amount || 0) * instRatio);
   const totalAmount = type === 'QT' ? (q.grand_total || 0) : (instAmount || 0);
 
-  const scaledItems = items.map(function(it) { return Object.assign({}, it, { price: roundHU((Number(it.price) || 0) * instRatio) }); }).filter(function(it) { return (it.desc && it.desc.trim()) || (Number(it.price)||0) > 0; });
+  const scaledItems = items.map(function(it) { return Object.assign({}, it, { price: roundHU((Number(it.price) || 0) * instRatio) }); }).filter(function(it) { return (it.desc && it.desc.trim()) || (it.detail && it.detail.trim()) || (Number(it.price)||0) > 0; });
   const allRowsData = scaledItems.length ? scaledItems : [{ desc: project.project_name || '-', qty: 1, price: subtotal }];
+  const itemNumbers = _qtItemNumbers(allRowsData);
 
   function makeRow(it, idx) {
     const qty = Number(it.qty || 0) || 0;
     const price = Number(it.price || 0) || 0;
     const lineTotal = qty * price;
     return '<tr>' +
-      '<td class="m-no">' + (idx + 1) + '</td>' +
-      '<td class="m-desc"><div class="item-title">' + esc(it.desc || '-') + '</div>' + (idx === 0 && instIdx ? '<div class="item-sub">' + esc(instIdx) + '</div>' : '') + '</td>' +
+      '<td class="m-no">' + itemNumbers[idx] + '</td>' +
+      '<td class="m-desc"><div class="item-title' + (it.level === 'sub' ? ' sub-item' : '') + '">' + esc(it.desc || '-') + '</div>' + (it.detail ? '<div class="item-detail">' + htmlText(it.detail) + '</div>' : '') + (idx === 0 && instIdx ? '<div class="item-sub">' + esc(instIdx) + '</div>' : '') + '</td>' +
       '<td class="m-center">' + qty + '</td>' +
       '<td class="m-center">-</td>' +
       '<td class="m-money">' + fmt(price) + '</td>' +
@@ -3107,10 +3302,10 @@ function previewDoc(projId, type, docNum) {
     '<div class="lower-grid">' +
       '<div class="note-box terms-red">' +
         '<div class="block" style="border-top:none;padding-top:0;margin-top:0"><b>Remark / หมายเหตุ</b><br>' + htmlText(remarks) + '</div>' +
-        '<div class="block"><div class="terms-head">Payment Terms &amp; Conditions</div><div>' + bankInfo + '</div></div>' +
+        '<div class="block"><div class="terms-head">Payment Terms &amp; Conditions</div><div>' + htmlText(bankInfo) + '</div></div>' +
         '<div class="block"><div class="terms-head">Payment Schedule / งวดชำระ</div><table class="schedule"><colgroup><col style="width:22mm"><col style="width:38mm"><col style="width:25mm"><col style="width:28mm"><col style="width:22mm"></colgroup><thead><tr><th>Milestone</th><th>Description</th><th>Due Date</th><th class="right">Amount</th><th>Status</th></tr></thead><tbody>' + scheduleRows + '</tbody></table></div>' +
       '</div>' +
-      '<div class="totals-qr-wrap"><table class="totals-min"><tr><td>Subtotal</td><td>' + fmt(subtotal) + '</td></tr><tr><td>VAT 7%</td><td>' + fmt(vatAmount) + '</td></tr>' + (whtRate ? '<tr><td>WHT ' + whtRate + '%</td><td>' + fmt(whtAmount) + '</td></tr>' : '') + '<tr class="total"><td>Total</td><td>' + fmt(totalAmount) + '</td></tr></table><div class="payment-qr-box">' + (companyPaymentQr ? '<img src="' + companyPaymentQr + '" alt="Payment QR" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:2mm;">' : 'QR CODE<br>PAYMENT') + '</div></div>' +
+      '<div class="totals-qr-wrap"><table class="totals-min"><tr><td>Subtotal</td><td>' + fmt(subtotal) + '</td></tr>' + (q.vat_mode === 'none' ? '' : '<tr><td>VAT 7%</td><td>' + fmt(vatAmount) + '</td></tr>') + (whtRate ? '<tr><td>WHT ' + whtRate + '%</td><td>' + fmt(whtAmount) + '</td></tr>' : '') + '<tr class="total"><td>Total</td><td>' + fmt(totalAmount) + '</td></tr></table><div class="payment-qr-box">' + (companyPaymentQr ? '<img src="' + companyPaymentQr + '" alt="Payment QR" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:2mm;">' : 'QR CODE<br>PAYMENT') + '</div></div>' +
     '</div>' +
     '<div class="sign-grid-min"><div class="sign-min"><div class="sign-label">Client Acknowledgement</div><div class="sign-name">____________________________</div><div class="sign-role">Signature / Date</div></div><div class="sign-min">' + (companyStamp ? '<img class="stamp-img" src="' + companyStamp + '" alt="Company stamp">' : '') + (companySignature ? '<img class="signature-img" src="' + companySignature + '" alt="Signature">' : '') + '<div class="sign-label">Prepared By</div><div class="sign-name">' + esc(preparedByName) + '</div><div class="sign-role">' + esc(preparedByTitle) + '<br>' + docDateText + '</div></div></div>';
 
@@ -3156,6 +3351,8 @@ function previewDoc(projId, type, docNum) {
     '.m-money{text-align:right;width:30mm;}' +
     '.strong{font-weight:800;}' +
     '.item-title{font-weight:700;}' +
+    '.item-title.sub-item{padding-left:3mm;font-weight:600;}' +
+    '.item-detail{color:#666;font-size:8.5px;line-height:1.4;margin-top:.8mm;white-space:normal;}' +
     '.item-sub{color:#777;font-size:8.7px;margin-top:.8mm;}' +
     '.section-title{font-size:9px;text-transform:uppercase;letter-spacing:.3px;color:#555;font-weight:800;margin:6mm 0 1.5mm;}' +
     '.schedule{width:100%;max-width:100%;border-collapse:collapse;table-layout:fixed;margin-top:1.5mm;}' +
@@ -3450,7 +3647,6 @@ function renderSettings(el) {
     '<div><label class="text-sm text-slate-400 block mb-2">ที่อยู่</label><textarea id="set-company-addr" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none h-20 resize-none">' + (cfg.company_address||defaultConfig.company_address) + '</textarea></div>' +
     '<div class="grid grid-cols-2 gap-4"><div><label class="text-sm text-slate-400 block mb-2">โทรศัพท์</label><input id="set-company-phone" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + (cfg.company_phone||defaultConfig.company_phone) + '"></div><div><label class="text-sm text-slate-400 block mb-2">อีเมล</label><input id="set-company-email" type="email" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + (cfg.company_email||defaultConfig.company_email) + '"></div></div>' +
     '<div><label class="text-sm text-slate-400 block mb-2">Website</label><input id="set-company-website" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + (cfg.company_website||defaultConfig.company_website||'') + '"></div>' +
-    '<div><label class="text-sm text-slate-400 block mb-2">Payment Terms / Bank Info</label><textarea id="set-company-bank" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none h-20 resize-none">' + ((cfg.company_bank_info||defaultConfig.company_bank_info||'').replace(/<br>/g,'\\n')) + '</textarea></div>' +
     '<div class="pt-4 border-t border-slate-700"><h3 class="text-sm font-semibold text-white mb-3">ข้อมูลผู้จัดทำเอกสาร</h3>' +
     '<div class="grid md:grid-cols-2 gap-4"><div><label class="text-sm text-slate-400 block mb-2">ชื่อผู้จัดทำ / Prepared By</label><input id="set-prepare-name" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + (cfg.company_prepare_name||defaultConfig.company_prepare_name||'') + '"></div>' +
     '<div><label class="text-sm text-slate-400 block mb-2">ตำแหน่ง / Position</label><input id="set-prepare-title" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + (cfg.company_prepare_title||defaultConfig.company_prepare_title||'') + '"></div></div>' +
@@ -3491,7 +3687,7 @@ async function saveSettings(e) {
       company_phone: document.getElementById('set-company-phone').value,
       company_email: document.getElementById('set-company-email').value,
       company_website: document.getElementById('set-company-website').value,
-      company_bank_info: document.getElementById('set-company-bank').value.replace(/\n/g,'<br>'),
+      company_bank_info: cfg.company_bank_info || defaultConfig.company_bank_info,
       company_prepare_name: document.getElementById('set-prepare-name').value,
       company_prepare_title: document.getElementById('set-prepare-title').value,
       company_logo_data: logoData === null ? getAssetValue('company_logo_data') : logoData,
