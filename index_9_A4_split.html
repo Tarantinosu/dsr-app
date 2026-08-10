@@ -203,8 +203,11 @@ html,body{height:100%;margin:0}
   
 @media print{
   aside, header, nav, .sidebar, .topbar, .no-print{display:none!important}
+  #app{display:block!important;width:210mm!important;height:auto!important;min-height:0!important;overflow:visible!important}
   #main-content{display:block!important;width:100%!important;margin:0!important;padding:0!important;background:#fff!important}
-  body,html{background:#fff!important;margin:0!important;padding:0!important;width:210mm!important;min-height:297mm!important;overflow:visible!important}
+  #main-content{height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important}
+  body,html{background:#fff!important;margin:0!important;padding:0!important;width:210mm!important;height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important}
+  .fade-in{animation:none!important;transform:none!important}
 }
 </style>
 
@@ -3210,8 +3213,6 @@ function previewDoc(projId, type, docNum) {
   const scaledItems = items.map(function(it) { return Object.assign({}, it, { price: roundHU((Number(it.price) || 0) * instRatio) }); }).filter(function(it) { return (it.desc && it.desc.trim()) || (it.detail && it.detail.trim()) || (Number(it.price)||0) > 0; });
   const allRowsData = scaledItems.length ? scaledItems : [{ desc: project.project_name || '-', qty: 1, price: subtotal }];
   const itemNumbers = _qtItemNumbers(allRowsData);
-  const PAGE1_MAX = 5;
-  const PAGEN_MAX = 8;
 
   function makeRow(it, idx) {
     const qty = Number(it.qty || 0) || 0;
@@ -3280,11 +3281,34 @@ function previewDoc(projId, type, docNum) {
     '</div>' +
     '<div class="sign-grid-min"><div class="sign-min"><div class="sign-label">Client Acknowledgement</div><div class="sign-name">____________________________</div><div class="sign-role">Signature / Date</div></div><div class="sign-min">' + (companyStamp ? '<img class="stamp-img" src="' + companyStamp + '" alt="Company stamp">' : '') + (companySignature ? '<img class="signature-img" src="' + companySignature + '" alt="Signature">' : '') + '<div class="sign-label">Prepared By</div><div class="sign-name">' + esc(preparedByName) + '</div><div class="sign-role">' + esc(preparedByTitle) + '<br>' + docDateText + '</div></div></div>';
 
-  // Paginate items
-  var _remaining = allRowsData.slice();
+  // Fill each A4 page with as many complete rows as fit. Longer descriptions
+  // consume more space, but a normal document keeps several rows per page.
+  function _rowUnits(it) {
+    var textLen = String((it && it.desc) || '').length + String((it && it.detail) || '').length;
+    if (textLen > 500) return 5;
+    if (textLen > 320) return 4;
+    if (textLen > 190) return 3;
+    if (textLen > 90) return 2;
+    return 1;
+  }
   var _chunks = [];
-  _chunks.push(_remaining.splice(0, PAGE1_MAX));
-  while (_remaining.length > 0) { _chunks.push(_remaining.splice(0, PAGEN_MAX)); }
+  var _rowCursor = 0;
+  while (_rowCursor < allRowsData.length) {
+    var _pageIndex = _chunks.length;
+    // The first-page header is compact enough to leave substantially more
+    // room than the old estimate. Fill the remaining A4 area more closely
+    // while keeping every row intact.
+    var _capacity = _pageIndex === 0 ? 18 : 22;
+    var _used = 0;
+    var _start = _rowCursor;
+    while (_rowCursor < allRowsData.length) {
+      var _nextUnits = _rowUnits(allRowsData[_rowCursor]);
+      if (_rowCursor > _start && _used + _nextUnits > _capacity) break;
+      _used += _nextUnits;
+      _rowCursor += 1;
+    }
+    _chunks.push(allRowsData.slice(_start, _rowCursor));
+  }
 
   var _rowOffset = 0;
   var pagesHtml = _chunks.map(function(chunk, pi) {
@@ -3296,6 +3320,7 @@ function previewDoc(projId, type, docNum) {
       (isFirst ? _page1Header : _contHeader) +
       makeItemTable(rowsHtml) +
       (isLast ? _footer : '') +
+      '<div class="doc-page-number">Page ' + (pi + 1) + ' / ' + _chunks.length + '</div>' +
       '</div></div>';
   }).join('');
 
@@ -3373,7 +3398,8 @@ function previewDoc(projId, type, docNum) {
     '.signature-img{position:absolute;left:50%;top:-9.5mm;transform:translateX(-50%);max-width:38mm;max-height:14mm;object-fit:contain;}' +
     '.stamp-img{position:absolute;left:50%;top:-13mm;transform:translateX(-50%);max-width:38mm;max-height:20mm;object-fit:contain;opacity:.85;}' +
     '.payment-qr-box{margin-top:4mm;width:30mm;min-height:30mm;border:1px dashed rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;font-size:7.5px;color:#777;text-align:center;line-height:1.35;margin-left:auto;margin-right:auto;}' +
-    '@media print{body{background:#fff}.no-print{display:none!important}.mindoc-pages{padding:0;background:#fff}.mindoc-page{margin:0;page-break-after:always;break-after:page}.mindoc-page:last-child{page-break-after:auto;break-after:auto}.mindoc{box-shadow:none;margin:0;width:210mm;min-height:297mm}.p-4{padding:0!important}@page{size:A4;margin:0}}' +
+    '.doc-page-number{position:absolute;left:14mm;right:14mm;bottom:5mm;text-align:center;color:#888;font-size:7.5px;letter-spacing:.2px;}' +
+    '@media print{html,body,#app,#main-content{height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important}html,body{margin:0!important;padding:0!important;background:#fff}.no-print{display:none!important}.fade-in{animation:none!important;transform:none!important}.mindoc-pages{display:block!important;height:auto!important;overflow:visible!important;padding:0;background:#fff}.mindoc-page{display:block!important;position:relative!important;margin:0!important;width:210mm!important;height:297mm!important;min-height:297mm!important;max-height:297mm!important;overflow:hidden!important;page-break-inside:avoid!important;break-inside:avoid-page!important;page-break-after:always!important;break-after:page!important}.mindoc-page:last-child{page-break-after:auto!important;break-after:auto!important}.mindoc{box-shadow:none;margin:0;width:210mm;height:297mm;min-height:297mm;overflow:hidden;position:relative}.items-min tr,.lower-grid,.sign-grid-min{page-break-inside:avoid;break-inside:avoid}.p-4{padding:0!important}@page{size:A4 portrait;margin:0}}' +
     '</style>' +
     '<div class="mindoc-pages">' + pagesHtml + '</div>' +
     '</div>';

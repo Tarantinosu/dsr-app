@@ -203,8 +203,11 @@ html,body{height:100%;margin:0}
   
 @media print{
   aside, header, nav, .sidebar, .topbar, .no-print{display:none!important}
+  #app{display:block!important;width:210mm!important;height:auto!important;min-height:0!important;overflow:visible!important}
   #main-content{display:block!important;width:100%!important;margin:0!important;padding:0!important;background:#fff!important}
-  body,html{background:#fff!important;margin:0!important;padding:0!important;width:210mm!important;min-height:297mm!important;overflow:visible!important}
+  #main-content{height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important}
+  body,html{background:#fff!important;margin:0!important;padding:0!important;width:210mm!important;height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important}
+  .fade-in{animation:none!important;transform:none!important}
 }
 </style>
 
@@ -3314,7 +3317,7 @@ function previewDoc(projId, type, docNum) {
     '.mindoc-pages{background:#f3f4f6;padding:8px 0;}' +
     '.mindoc-page{margin:0 auto 8px;}' +
     '.mindoc-page:last-child{margin-bottom:0;}' +
-    '.mindoc{width:210mm;min-height:297mm;background:#fff;color:#161616;margin:0 auto;padding:14mm 14mm 12mm;box-sizing:border-box;font-family:Arial,Helvetica,sans-serif;font-size:9.6px;line-height:1.45;box-shadow:0 0 0 1px #e5e7eb;}' +
+    '.mindoc{width:210mm;height:297mm;background:#fff;color:#161616;margin:0 auto;padding:14mm 14mm 14mm;box-sizing:border-box;font-family:Arial,Helvetica,sans-serif;font-size:9.6px;line-height:1.45;box-shadow:0 0 0 1px #e5e7eb;position:relative;overflow:hidden;}' +
     '.mindoc *{box-sizing:border-box;}' +
     '.cont-head{display:flex;justify-content:space-between;align-items:center;padding-bottom:3mm;border-bottom:1px solid #9ca3af;margin-bottom:4mm;}' +
     '.cont-company{font-size:10px;font-weight:800;color:#333;}' +
@@ -3377,7 +3380,8 @@ function previewDoc(projId, type, docNum) {
     '.signature-img{position:absolute;left:50%;top:-9.5mm;transform:translateX(-50%);max-width:38mm;max-height:14mm;object-fit:contain;}' +
     '.stamp-img{position:absolute;left:50%;top:-13mm;transform:translateX(-50%);max-width:38mm;max-height:20mm;object-fit:contain;opacity:.85;}' +
     '.payment-qr-box{margin-top:4mm;width:30mm;min-height:30mm;border:1px dashed rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;font-size:7.5px;color:#777;text-align:center;line-height:1.35;margin-left:auto;margin-right:auto;}' +
-    '@media print{body{background:#fff}.no-print{display:none!important}.mindoc-pages{padding:0;background:#fff}.mindoc-page{margin:0;page-break-after:always;break-after:page}.mindoc-page:last-child{page-break-after:auto;break-after:auto}.mindoc{box-shadow:none;margin:0;width:210mm;min-height:297mm}.p-4{padding:0!important}@page{size:A4;margin:0}}';
+    '.doc-page-number{position:absolute;left:14mm;right:14mm;bottom:5mm;text-align:center;color:#888;font-size:7.5px;letter-spacing:.2px;}' +
+    '@media print{html,body,#app,#main-content{height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important}html,body{margin:0!important;padding:0!important;background:#fff}.no-print{display:none!important}.fade-in{animation:none!important;transform:none!important}.mindoc-pages{display:block!important;height:auto!important;overflow:visible!important;padding:0;background:#fff}.mindoc-page{display:block!important;position:relative!important;margin:0!important;width:210mm!important;height:297mm!important;min-height:297mm!important;max-height:297mm!important;overflow:hidden!important;page-break-inside:avoid!important;break-inside:avoid-page!important;page-break-after:always!important;break-after:page!important}.mindoc-page:last-child{page-break-after:auto!important;break-after:auto!important}.mindoc{box-shadow:none;margin:0;width:210mm;height:297mm;min-height:297mm;overflow:hidden}.items-min tr,.lower-grid,.sign-grid-min{page-break-inside:avoid;break-inside:avoid}.p-4{padding:0!important}@page{size:A4 portrait;margin:0}}';
 
   // DOM-based height measurement for accurate A4 pagination
   var _a4mEl = document.createElement('div');
@@ -3390,7 +3394,10 @@ function previewDoc(projId, type, docNum) {
   _mb.style.cssText = 'position:fixed;left:-9999px;top:0;visibility:hidden;pointer-events:none;';
   document.body.appendChild(_mb);
   var _mbSt = document.createElement('style');
-  _mbSt.textContent = _docCss + '.mindoc{min-height:0!important;}';
+  // Shrink-wrap the hidden measurement copy. The visible/printed document
+  // remains fixed at A4 height; measuring that fixed height would make the
+  // header appear to consume the whole page and force rows forward too early.
+  _mbSt.textContent = _docCss + '.mindoc{height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important;}';
   _mb.appendChild(_mbSt);
 
   function _mMindoc(html) {
@@ -3410,8 +3417,10 @@ function previewDoc(projId, type, docNum) {
   document.body.removeChild(_mb);
 
   // Greedy height-based split: items fill pages without overflowing A4 height
-  var _avail1 = Math.max(_a4px - _p1OH, 80);
-  var _availC = Math.max(_a4px - _cOH, 120);
+  // Reserve a small bottom safety area for the page number and browser rounding.
+  var _pageSafety = 28;
+  var _avail1 = Math.max(_a4px - _p1OH - _pageSafety, 80);
+  var _availC = Math.max(_a4px - _cOH - _pageSafety, 120);
   var _pChunks = []; // [{s: startIdx, e: endIdx}]
   var _cs = 0, _ch = 0, _ca = _avail1;
 
@@ -3424,23 +3433,15 @@ function previewDoc(projId, type, docNum) {
   }
   _pChunks.push({ s: _cs, e: allRowsData.length });
 
-  // Ensure footer fits on last page by trimming last chunk if needed
+  // Keep the complete totals/terms/signature block together. If it does not fit,
+  // move that whole block to a fresh A4 page instead of clipping it.
   if (_fH > 0 && _pChunks.length > 0) {
     var _lc = _pChunks[_pChunks.length - 1];
     var _lcH = 0;
     for (var _ri2 = _lc.s; _ri2 < _lc.e; _ri2++) _lcH += _rowHs[_ri2] || 40;
     var _la = _pChunks.length === 1 ? _avail1 : _availC;
     if (_lcH + _fH > _la) {
-      var _ke = _lc.s, _kh = 0, _lim = Math.max(_la - _fH, 0);
-      for (var _ri3 = _lc.s; _ri3 < _lc.e; _ri3++) {
-        var _rh3 = _rowHs[_ri3] || 40;
-        if (_kh + _rh3 > _lim) break;
-        _kh += _rh3; _ke = _ri3 + 1;
-      }
-      if (_ke > _lc.s) {
-        _pChunks[_pChunks.length - 1] = { s: _lc.s, e: _ke };
-        _pChunks.push({ s: _ke, e: _lc.e });
-      }
+      _pChunks.push({ s: _lc.e, e: _lc.e, footerOnly: true });
     }
   }
 
@@ -3451,8 +3452,9 @@ function previewDoc(projId, type, docNum) {
     for (var _ri = chunk.s; _ri < chunk.e; _ri++) rowsHtml += makeRow(allRowsData[_ri], _ri);
     return '<div class="mindoc-page"><div class="mindoc">' +
       (isFirst ? _page1Header : _contHeader) +
-      makeItemTable(rowsHtml) +
+      (chunk.footerOnly ? '' : makeItemTable(rowsHtml)) +
       (isLast ? _footer : '') +
+      '<div class="doc-page-number">Page ' + (pi + 1) + ' / ' + _pChunks.length + '</div>' +
       '</div></div>';
   }).join('');
 
