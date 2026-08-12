@@ -3142,11 +3142,37 @@ async function deleteExtDoc(extId) {
 }
 
 
+function safeDocumentFileName(value, fallback) {
+  var name = String(value || '').trim();
+  if (!name) name = String(fallback || 'DOCUMENT').trim();
+  // Windows does not allow these characters in file names. Keep the visible
+  // document code intact otherwise so Save as PDF uses the real code.
+  name = name.replace(/[\\/:*?"<>|]/g, '-').replace(/[. ]+$/g, '').trim();
+  return name || 'DOCUMENT';
+}
+
+function documentDateFilePart(value) {
+  if (!value) return '';
+  var raw = String(value).trim();
+  var iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return iso[1] + '-' + iso[2] + '-' + iso[3];
+  var d = new Date(value);
+  if (isNaN(d.getTime())) return '';
+  return String(d.getFullYear()) + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
 function previewDoc(projId, type, docNum) {
   const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
   const project = allData.find(r => r.record_type === 'project' && r.project_id === projId);
   const q = getQuotation(projId);
   if (!project || !q) { console.warn('previewDoc missing project/quotation', {projId: projId, type: type, docNum: docNum, project: project, quotation: q}); showToast('ไม่พบข้อมูลเอกสารสำหรับพรีวิว', 'error'); return false; }
+  if (!docNum) {
+    if (type === 'QT') docNum = q.doc_number || '';
+    else {
+      var matchingInst = byType('installment').find(function(i) { return i.project_id === projId && (type === 'INV' ? i.invoice_number : i.receipt_number); });
+      docNum = matchingInst ? (type === 'INV' ? matchingInst.invoice_number : matchingInst.receipt_number) : '';
+    }
+  }
   const items = safeParseJSON(q.items_json);
   const installments = getInstallments(projId);
   const client = getProfiles('client').find(c => c.name === project.client_name);
@@ -3325,7 +3351,9 @@ function previewDoc(projId, type, docNum) {
   }).join('');
 
   const main = document.getElementById('main-content');
-  document.title = docTitle + ' No.' + docNum;
+  var documentFileDate = documentDateFilePart(docDate);
+  window.dsrCurrentPrintFileName = safeDocumentFileName(docNum + (documentFileDate ? '_' + documentFileDate : ''), type + '-' + projId);
+  document.title = window.dsrCurrentPrintFileName;
   main.innerHTML = '<div class="p-4 fade-in">' +
     '<div class="flex justify-between items-center mb-4 no-print">' +
     '<button class="text-sm text-slate-400 hover:text-white flex items-center gap-1" onclick="navigate(\'documents\')"><i data-lucide="arrow-left" class="w-4 h-4"></i> กลับ</button>' +
@@ -3409,10 +3437,12 @@ function previewDoc(projId, type, docNum) {
 
 function runPrintDialog() {
   try {
+    if (window.dsrCurrentPrintFileName) document.title = window.dsrCurrentPrintFileName;
     if (window.lucide) lucide.createIcons();
     window.focus();
     requestAnimationFrame(function() {
       setTimeout(function() {
+        if (window.dsrCurrentPrintFileName) document.title = window.dsrCurrentPrintFileName;
         window.focus();
         window.print();
       }, 450);
