@@ -1,0 +1,18 @@
+{
+  "name": "DSR+ Project & Finance",
+  "short_name": "DSR+",
+  "description": "ระบบ Project Tracking และบัญชีแบบ Local-first พร้อม Google Sync",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "assets/DSR_Offline.png",
+      "sizes": "256x256",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

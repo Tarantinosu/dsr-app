@@ -3,12 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DSR+ | DOPIOUS SHARE REVENUE</title>
-  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
-  <script src="https://cdn.jsdelivr.net/npm/lucide@0.263.0/dist/umd/lucide.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <meta name="theme-color" content="#0f172a">
+  <title>DSR+ Offline | DOPIOUS SHARE REVENUE</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="assets/tailwind.css">
+  <script src="assets/lucide.min.js"></script>
+  <script src="assets/xlsx.full.min.js"></script>
+  <script src="dsr-local.js?v=20261020-google-proxy-fix"></script>
+  <script src="dsr-hybrid.js?v=20261021-cross-device-sync"></script>
   <script>
-// ===== GOOGLE SHEETS SDK — shared multi-user via Apps Script =====
+// ===== OFFLINE SDK — data stays on this computer =====
 (function () {
 
   // ── Config (local per-browser, e.g. company settings) ────────────────
@@ -18,157 +22,75 @@
   if (!window.elementSdk) {
     window.elementSdk = {
       config: _cfg,
-      init: function (opts) { if (opts && opts.onConfigChange) opts.onConfigChange(_cfg); },
+      init: function (opts) {
+        window.elementSdk._onConfigChange = opts && opts.onConfigChange;
+        if (window.elementSdk._onConfigChange) window.elementSdk._onConfigChange(_cfg);
+      },
       setConfig: async function (patch) {
         Object.assign(_cfg, patch);
         window.elementSdk.config = _cfg;
-        try { localStorage.setItem('DSR_config', JSON.stringify(_cfg)); } catch (e) {}
-        // Save to Google Sheets (exclude per-device fields: signature, images, prepared-by)
+        // Keep large images in IndexedDB. localStorage is intentionally limited
+        // and previously made the whole Save button fail when several images existed.
+        if (window.dataSdk && window.dataSdk.saveDeviceConfig) {
+          var localConfigResult = await window.dataSdk.saveDeviceConfig(_cfg);
+          if (!localConfigResult || !localConfigResult.isOk) {
+            throw new Error((localConfigResult && localConfigResult.error) || 'บันทึกการตั้งค่าในเครื่องไม่สำเร็จ');
+          }
+        }
+        ['company_signature_data','company_logo_data','company_stamp_data','company_payment_qr_data'].forEach(function(k){
+          try { localStorage.removeItem('DSR_' + k); } catch (ignore) {}
+        });
+        var compactCfg = Object.assign({}, _cfg);
+        ['company_signature_data','company_logo_data','company_stamp_data','company_payment_qr_data'].forEach(function(k){ delete compactCfg[k]; });
+        try { localStorage.setItem('DSR_config', JSON.stringify(compactCfg)); } catch (e) {}
+        // Save settings to the local database. Images remain in local device storage.
         if (window.dataSdk) {
           var LOCAL_ONLY_KEYS = ['company_signature_data','company_logo_data','company_stamp_data','company_payment_qr_data','company_prepare_name','company_prepare_title'];
           var sheetsCfg = {};
           Object.keys(_cfg).forEach(function(k){ if (LOCAL_ONLY_KEYS.indexOf(k) === -1) sheetsCfg[k] = _cfg[k]; });
-          var existing = (window.allData || []).find(function(r){ return r.record_type === 'config'; });
+          var existing = (allData || []).find(function(r){ return r.record_type === 'config'; });
+          var saveResult;
           if (existing) {
-            await window.dataSdk.update(Object.assign({}, existing, sheetsCfg, { record_type: 'config' }));
+            saveResult = await window.dataSdk.update(Object.assign({}, existing, sheetsCfg, { record_type: 'config' }));
           } else {
-            await window.dataSdk.create(Object.assign({}, sheetsCfg, { record_type: 'config' }));
+            saveResult = await window.dataSdk.create(Object.assign({}, sheetsCfg, { record_type: 'config' }));
+          }
+          if (!saveResult || !saveResult.isOk) {
+            throw new Error((saveResult && saveResult.error) || 'บันทึกข้อมูลบริษัทไม่สำเร็จ');
           }
         }
+        if (window.elementSdk._onConfigChange) window.elementSdk._onConfigChange(_cfg);
         return { isOk: true };
       }
     };
   }
 
-  // ── Shared data SDK (Google Sheets) ──────────────────────────────────
+  // Writes commit to IndexedDB immediately. Google Apps Script synchronization runs in the background.
   if (!window.dataSdk) {
-
-    // Script URL ที่ทุกคนใช้ร่วมกัน — เจ้าของตั้งค่าครั้งเดียว แชร์ URL ให้เพื่อนวางใน Settings
-    var _url = '';
-    try { _url = localStorage.getItem('DSR_script_url') || ''; } catch (e) {}
-
-    var _handler = null;
-    var _polling = null;
-
-    // ── Banner ──────────────────────────────────────────────────────────
-    function _banner(type) {
-      var el = document.getElementById('dsr-banner');
-      if (!el) { setTimeout(function () { _banner(type); }, 300); return; }
-      var txt = {
-        none:    '⚙️&nbsp; ยังไม่ได้ตั้งค่า Script URL — ไปที่ <b>ตั้งค่า → การเชื่อมต่อ</b> แล้ววาง URL ของ Apps Script',
-        offline: '⚠️&nbsp; เชื่อมต่อ Google Sheets ไม่ได้ — แสดงข้อมูลจาก Cache | จะลองใหม่ใน 30 วิ'
-      };
-      var _closeBtn = '<button onclick="var b=document.getElementById(\'dsr-banner\');if(b)b.style.display=\'none\';" style="margin-left:auto;background:none;border:none;color:#fff;font-size:20px;cursor:pointer;line-height:1;">&times;</button>';
-      el.innerHTML = (txt[type] || '') + _closeBtn;
-      el.style.display = 'flex';
-      var sp = document.getElementById('dsr-banner-sp');
-      if (sp) setTimeout(function(){ sp.style.height = el.offsetHeight + 'px'; }, 50);
-    }
-    function _hideBanner() {
-      var el = document.getElementById('dsr-banner');
-      if (el) el.style.display = 'none';
-      var sp = document.getElementById('dsr-banner-sp');
-      if (sp) sp.style.height = '0';
-    }
-
-    // ── Sync dot helpers ────────────────────────────────────────────────
-    function _dotOn()  { var d=document.getElementById('sync-dot'); if(d) d.style.display='block'; }
-    function _dotOff() { var d=document.getElementById('sync-dot'); if(d) d.style.display='none';  }
-
-    // ── Fetch all records from Sheet ────────────────────────────────────
-    async function _fetchAll() { _dotOn(); try {
-      if (!_url) { _banner('none'); return; }
-      try {
-        var res = await fetch(_url + '?action=read', { redirect: 'follow' });
-        var j   = await res.json();
-        if (j.isOk) {
-          _hideBanner();
-          var recs = j.records || [];
-          try { localStorage.setItem('DSR_data', JSON.stringify(recs)); } catch (e) {}
-          // Only notify if no input is focused (prevents re-render during editing)
-          var active = document.activeElement;
-          var isEditing = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT');
-          if (_handler && _handler.onDataChanged && !isEditing) _handler.onDataChanged(recs);
-          else if (_handler && _handler.onDataChanged) { window.allData = recs; }  // update data silently
-        } else { _banner('offline'); _fromCache(); }
-      } catch (e) { _banner('offline'); _fromCache(); } } finally { _dotOff(); }
-    }
-
-    function _fromCache() {
-      try {
-        var s = localStorage.getItem('DSR_data');
-        if (s && _handler && _handler.onDataChanged) _handler.onDataChanged(JSON.parse(s));
-      } catch (e) {}
-    }
-
-    // ── POST helper ─────────────────────────────────────────────────────
-    async function _post(body) {
-      if (!_url) { _banner('none'); return { isOk: false }; }
-      try {
-        var res = await fetch(_url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify(body),
-          redirect: 'follow'
-        });
-        return await res.json();
-      } catch (e) { _banner('offline'); return { isOk: false }; }
-    }
-
-    // ── Public API ──────────────────────────────────────────────────────
-    window.dataSdk = {
-      init: async function (handler) {
-        _handler = handler;
-        _fromCache();                       // แสดง cache ทันที ไม่รอ server
-        await _fetchAll();                  // ดึงข้อมูลจริงจาก Sheet
-        if (_polling) clearInterval(_polling);
-        _polling = setInterval(_fetchAll, 30000);   // รีเฟรชทุก 30 วิ
-        return { isOk: true };
+    window.dataSdk = createDSRHybrid({
+      fetch: window.fetch.bind(window),
+      storage: window.localStorage,
+      getRecords: function () { return allData; },
+      setRecords: function (records) { allData = records; },
+      hasPendingDraft: function () { return dsrHasPendingDraft(); },
+      onStatus: function (state) { dsrShowSyncStatus(state); },
+      onSaved: function (action, record) {
+        window._dsrSavedVersion = (window._dsrSavedVersion || 0) + 1;
+        if (action === 'delete' || (action === 'update' && record.record_type !== 'quotation' && record.record_type !== 'config')) dsrRenderActionWhenIdle();
       },
-      create: async function (record) {
-        var r = await _post({ action: 'create', record: record });
-        if (r && r.isOk) { record.__backendId = r.__backendId; allData.push(record); _fetchAll(); }
-        return r || { isOk: false };
-      },
-      update: async function (record) {
-        // Optimistic: update local state immediately, never re-fetch (avoids re-render)
-        var idx = allData ? allData.findIndex(function(d){ return d.__backendId === record.__backendId; }) : -1;
-        if (idx >= 0) allData[idx] = record;
-        var r = await _post({ action: 'update', record: record });
-        // No _fetchAll here — prevents re-render loop
-        return r || { isOk: false };
-      },
-      delete: async function (record) {
-        var r = await _post({ action: 'delete', id: record.__backendId });
-        if (r && r.isOk) { allData = allData.filter(function(d){ return d.__backendId !== record.__backendId; }); _fetchAll(); }
-        return r || { isOk: false };
-      }
-    };
-
-    // ── URL management (ใช้จาก Settings) ───────────────────────────────
-    window.dsrSetUrl  = function (u) {
-      _url = (u || '').trim();
-      try { localStorage.setItem('DSR_script_url', _url); } catch (e) {}
-      _fetchAll();
-    };
-    window.dsrGetUrl  = function () { return _url; };
-    window.dsrRefresh = function () { _fetchAll(); };
+      onFailure: function () { window._dsrFailedVersion = (window._dsrFailedVersion || 0) + 1; }
+    });
+    window.dsrGetUrl = window.dataSdk.getUrl;
+    window.dsrSetUrl = function (value) { return window.dataSdk.setUrl(value); };
+    window.dsrRefresh = function () { return dsrRequestRefresh(); };
   }
 
 })();
   </script>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Serif+Thai:wght@400;500;600;700&family=Taviraj:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script>
-try {
-tailwind.config = {
-  theme: { extend: { fontFamily: { thai: ['IBM Plex Sans Thai','sans-serif'], mono: ['JetBrains Mono','monospace'] } } }
-}
-} catch(e) { console.warn('Tailwind not loaded:', e.message); }
-  </script>
   <style>
 html,body{height:100%;margin:0}
-*{font-family:'IBM Plex Sans Thai',sans-serif}
-.mono{font-family:'JetBrains Mono',monospace}
+*{font-family:'Leelawadee UI','Tahoma','Arial',sans-serif}
+.mono{font-family:'Consolas','Courier New',monospace}
 ::-webkit-scrollbar{width:6px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:#334155;border-radius:3px}
@@ -341,7 +263,7 @@ html,body{height:100%;margin:0}
       <div class="flex items-center gap-2">
         <div class="w-12 h-8 rounded-lg dsr-logo-mark flex items-center justify-center font-bold text-white text-xs tracking-tight">DSR+</div>
         <div>
-          <div class="flex items-center gap-1.5"><div class="font-semibold text-sm text-white" id="sidebar-company">DSR+</div><div id="sync-dot" title="กำลังซิงค์..." style="display:none;width:7px;height:7px;border-radius:50%;background:#22c55e;animation:syncPulse 1.5s infinite;"></div></div>
+          <div class="flex items-center gap-1.5"><div class="font-semibold text-sm text-white" id="sidebar-company">DSR+ OFFLINE</div><div id="sync-dot" title="กำลังบันทึกลงเครื่อง..." style="display:none;width:7px;height:7px;border-radius:50%;background:#22c55e;animation:syncPulse 1.5s infinite;"></div></div>
           <div class="text-xs text-orange-400/80">DOPIOUS SHARE REVENUE</div>
         </div>
       </div>
@@ -362,6 +284,11 @@ html,body{height:100%;margin:0}
       <button class="nav-item whitespace-nowrap md:whitespace-normal flex items-center gap-3 flex-shrink-0 md:flex-shrink" data-page="logs" onclick="navigate('logs')"><i data-lucide="scroll-text" class="w-4 h-4 flex-shrink-0"></i><span class="hidden md:inline">ประวัติ</span></button>
       <button class="nav-item whitespace-nowrap md:whitespace-normal flex items-center gap-3 flex-shrink-0 md:flex-shrink" data-page="settings" onclick="navigate('settings')"><i data-lucide="settings" class="w-4 h-4 flex-shrink-0"></i><span class="hidden md:inline">ตั้งค่า</span></button>
     </nav>
+    <div class="no-print" style="padding:12px;border-top:1px solid #292929;font-size:12px">
+      <div id="dsr-save-status" role="status" aria-live="polite" style="margin-bottom:8px;color:#94a3b8">กำลังโหลดข้อมูล…</div>
+      <button id="dsr-refresh-button" type="button" onclick="dsrRequestRefresh()" style="padding:6px 10px;border:1px solid #444;border-radius:6px">↻ ซิงก์ข้อมูล</button>
+      <button id="dsr-retry-save" type="button" hidden onclick="dsrRetryGoogleSync()" style="padding:6px 10px;color:#fbbf24">ลองส่ง Google อีกครั้ง</button>
+    </div>
   </aside>
   <main id="main-content" class="flex-1 overflow-auto h-full w-full"></main>
 </div>
@@ -411,7 +338,8 @@ function esc(v) { return String(v == null ? '' : v).replace(/[&<>\"]/g, function
 
 function getAssetValue(key) {
   const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
-  return (cfg && cfg[key]) || localStorage.getItem('DSR_' + key) || '';
+  if (cfg && cfg[key]) return cfg[key];
+  try { return localStorage.getItem('DSR_' + key) || ''; } catch (ignore) { return ''; }
 }
 function assetImg(key, cls, alt) {
   const src = getAssetValue(key);
@@ -425,7 +353,6 @@ function readImageAsDataURL(inputId, previewId) {
     const reader = new FileReader();
     reader.onload = function() {
       const value = reader.result;
-      localStorage.setItem('DSR_' + inputId.replace('set-', '').replace(/-/g, '_') + '_data', value);
       const preview = document.getElementById(previewId);
       if (preview) preview.innerHTML = '<img src="' + value + '" class="max-h-20 max-w-full object-contain">';
       resolve(value);
@@ -584,6 +511,7 @@ function navigate(page, ctx) {
 }
 
 function renderPage() {
+  _dsrDirty = false;
   const main = document.getElementById('main-content');
   const ctx = window._navCtx;
   try {
@@ -606,6 +534,7 @@ function renderPage() {
     if (main) main.innerHTML = '<div class="p-6"><div class="bg-red-900/40 border border-red-700 rounded-xl p-4 text-red-300 text-sm"><b>⚠ เกิดข้อผิดพลาด:</b><pre class="mt-2 text-xs overflow-auto whitespace-pre-wrap">' + (err && err.stack ? err.stack : String(err)) + '</pre></div></div>';
   }
   if (window.lucide) lucide.createIcons();
+  setTimeout(function () { dsrRestoreFormDrafts(); }, 0);
 }
 
 // ===== PAGE: DASHBOARD =====
@@ -699,7 +628,7 @@ function renderProfiles(el) {
     '<div class="flex justify-between items-center mb-4"><div><h1 class="text-2xl font-bold text-white">ลูกค้า & พาร์ทเนอร์</h1></div>' +
     '<button class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="showProfileForm()"><i data-lucide="plus" class="w-4 h-4"></i> เพิ่มรายชื่อ</button></div>' +
     '<div class="flex gap-2 mb-4">' +
-    '<div class="relative flex-1"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i><input type="text" placeholder="ค้นหา..." value="' + (el._psearch||'') + '" oninput="_profileSearch(this,el)" class="w-full pl-9 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 focus:outline-none"></div>' +
+    '<div class="relative flex-1"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i><input type="text" placeholder="ค้นหา..." value="' + (el._psearch||'') + '" oninput="_profileSearch(this,document.getElementById(\'main-content\'))" class="w-full pl-9 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 focus:outline-none"></div>' +
     '<button class="' + btn1cls + '" onclick="_profileView=\'list\';localStorage.setItem(\'DSR_pv\',\'list\');renderProfiles(document.getElementById(\'main-content\'))"><i data-lucide="list" class="w-4 h-4"></i></button>' +
     '<button class="' + btn2cls + '" onclick="_profileView=\'grid\';localStorage.setItem(\'DSR_pv\',\'grid\');renderProfiles(document.getElementById(\'main-content\'))"><i data-lucide="layout-grid" class="w-4 h-4"></i></button>' +
     '</div>' +
@@ -713,6 +642,7 @@ function renderProfiles(el) {
       filtered.map(function(p){ return profileCard(p, isGrid); }).join('')) +
     '</div></div>';
   if (window.lucide) lucide.createIcons();
+  setTimeout(function () { dsrRestoreFormDrafts(); }, 0);
 }
 function _profileSearch(inp, el) { el._psearch = inp.value; var q = inp.value.toLowerCase();
   document.querySelectorAll('#profiles-list > div[data-role]').forEach(function(c){ c.style.display = (!q || c.dataset.search.includes(q)) ? '' : 'none'; }); }
@@ -766,6 +696,7 @@ function showProfileForm() {
     '<div class="col-span-2 flex gap-2 justify-end"><button type="button" class="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm" onclick="document.getElementById(\'profile-form-area\').innerHTML=\'\'">ยกเลิก</button><button type="submit" class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm" id="pf-submit">บันทึก</button></div>' +
     '</form></div>';
   if (window.lucide) lucide.createIcons();
+  setTimeout(function () { dsrRestoreFormDrafts(); }, 0);
 }
 
 async function saveProfile(e) {
@@ -803,7 +734,7 @@ function editProfile(id) {
   if (!p) return;
   document.getElementById('profile-form-area').innerHTML = '<div class="bg-slate-900 border border-blue-800 rounded-xl p-4 mb-4 fade-in">' +
     '<div class="text-sm font-semibold text-white mb-3">แก้ไขข้อมูล</div>' +
-    '<form id="profile-form" onsubmit="updateProfile(event,\'' + id + '\')" class="grid grid-cols-2 gap-3">' +
+    '<form id="profile-form" data-dsr-live-save="profile" oninput="dsrQueueProfileAutosave(\'' + id + '\')" onchange="dsrQueueProfileAutosave(\'' + id + '\')" onsubmit="updateProfile(event,\'' + id + '\')" class="grid grid-cols-2 gap-3">' +
     '<div><label class="text-xs text-slate-400">ประเภท</label><select id="pf-role" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="client"' + (p.role==='client'?' selected':'') + '>ลูกค้า</option><option value="partner"' + (p.role==='partner'?' selected':'') + '>พาร์ทเนอร์</option></select></div>' +
     '<div><label class="text-xs text-slate-400">สถานะ</label><select id="pf-entity" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="individual"' + (p.entity_type==='individual'?' selected':'') + '>บุคคลธรรมดา</option><option value="corporate"' + (p.entity_type==='corporate'?' selected':'') + '>นิติบุคคล</option></select></div>' +
     '<div class="col-span-2"><label class="text-xs text-slate-400">ชื่อ / บริษัท</label><input id="pf-name" required value="' + (p.name||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"></div>' +
@@ -818,10 +749,12 @@ function editProfile(id) {
     '</form></div>';
   document.getElementById('profile-form-area').scrollIntoView({ behavior: 'smooth' });
   if (window.lucide) lucide.createIcons();
+  setTimeout(function () { dsrRestoreFormDrafts(); }, 0);
 }
 
 async function updateProfile(e, id) {
   e.preventDefault();
+  dsrCancelLiveAutosave('profile:' + id);
   const btn = document.getElementById('pf-submit');
   btn.disabled = true; btn.textContent = 'กำลังบันทึก...';
   const rec = allData.find(r => r.__backendId === id);
@@ -839,7 +772,7 @@ async function updateProfile(e, id) {
     phone: document.getElementById('pf-phone').value
   });
   const result = await window.dataSdk.update(rec);
-  if (result.isOk) showToast('แก้ไขสำเร็จ');
+  if (result.isOk) { dsrClearManualPending(rec.__backendId); showToast('แก้ไขสำเร็จ'); }
   else { showToast('เกิดข้อผิดพลาด', 'error'); btn.disabled = false; btn.textContent = 'บันทึกการแก้ไข'; }
 }
 
@@ -908,7 +841,7 @@ function renderProjects(el) {
     '<button class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="showProjectForm()"><i data-lucide="plus" class="w-4 h-4"></i> สร้างโปรเจกต์</button>' +
     '</div></div>' +
     '<div class="flex gap-2 mb-4">' +
-    '<div class="relative flex-1"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i><input type="text" placeholder="ค้นหาโปรเจกต์..." oninput="_projSearch(this,el)" class="w-full pl-9 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 focus:outline-none"></div>' +
+    '<div class="relative flex-1"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i><input type="text" placeholder="ค้นหาโปรเจกต์..." oninput="_projSearch(this,document.getElementById(\'main-content\'))" class="w-full pl-9 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 focus:outline-none"></div>' +
     '<button class="'+b1+'" onclick="_projectView=\'list\';localStorage.setItem(\'DSR_prv\',\'list\');renderProjects(document.getElementById(\'main-content\'))"><i data-lucide="list" class="w-4 h-4"></i></button>' +
     '<button class="'+b2+'" onclick="_projectView=\'grid\';localStorage.setItem(\'DSR_prv\',\'grid\');renderProjects(document.getElementById(\'main-content\'))"><i data-lucide="layout-grid" class="w-4 h-4"></i></button>' +
     '</div>' +
@@ -916,6 +849,7 @@ function renderProjects(el) {
     '<div id="projects-list" class="'+grid+'">'+(filtered.length===0?'<p class="text-slate-500 text-sm py-8 text-center">ยังไม่มีโปรเจกต์ที่กำลังดำเนิน</p>':cards)+'</div>' +
     '</div>';
   if (window.lucide) lucide.createIcons();
+  setTimeout(function () { dsrRestoreFormDrafts(); }, 0);
 }
 function _projSearch(inp,el){el._prsearch=inp.value;var q=inp.value.toLowerCase();document.querySelectorAll('#projects-list>[data-s]').forEach(function(c){c.style.display=(!q||c.dataset.s.includes(q))?'':'none';});}
 
@@ -956,7 +890,7 @@ function renderCompletedProjects(el) {
     '<button class="'+b2+'" onclick="_projectView=\'grid\';localStorage.setItem(\'DSR_prv\',\'grid\');renderCompletedProjects(document.getElementById(\'main-content\'))"><i data-lucide="layout-grid" class="w-4 h-4"></i></button>' +
     '</div></div>' +
     '<div class="relative mb-4"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i>' +
-    '<input type="text" placeholder="ค้นหาโครงการเสร็จสิ้น..." oninput="_cpSearch(this,el)" class="w-full pl-9 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 focus:outline-none"></div>' +
+    '<input type="text" placeholder="ค้นหาโครงการเสร็จสิ้น..." oninput="_cpSearch(this,document.getElementById(\'main-content\'))" class="w-full pl-9 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 focus:outline-none"></div>' +
     (filtered.length === 0 ?
       '<div class="flex flex-col items-center justify-center py-16 text-center">' +
       '<div class="w-16 h-16 rounded-2xl bg-emerald-900/20 flex items-center justify-center mb-4"><i data-lucide="folder-check" class="w-8 h-8 text-emerald-700"></i></div>' +
@@ -980,6 +914,7 @@ function showProjectForm() {
     '<div class="col-span-2 flex gap-2 justify-end"><button type="button" class="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm" onclick="document.getElementById(\'project-form-area\').innerHTML=\'\'">ยกเลิก</button><button type="submit" class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm" id="proj-submit">สร้าง</button></div>' +
     '</form></div>';
   if (window.lucide) lucide.createIcons();
+  setTimeout(function () { dsrRestoreFormDrafts(); }, 0);
 }
 
 async function saveProject(e) {
@@ -1086,27 +1021,28 @@ function renderProjectProgressLegacy(project) {
   return '<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-5">' +
     '<div class="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-4">' +
       '<div class="flex justify-between items-center mb-3"><div class="text-sm font-semibold text-white">ความคืบหน้าโดยรวม</div><div class="mono text-xl font-bold text-orange-400" id="progress-value">' + progress + '%</div></div>' +
-      '<input id="project-progress-input" type="range" min="0" max="100" step="1" value="' + progress + '" class="w-full accent-orange-500" oninput="document.getElementById(\'progress-value\').textContent=this.value+\'%\'">' +
+      '<input id="project-progress-input" data-dsr-live-save="progress" type="range" min="0" max="100" step="1" value="' + progress + '" class="w-full accent-orange-500" oninput="document.getElementById(\'progress-value\').textContent=this.value+\'%\';dsrQueueProjectProgress(\'' + project.project_id + '\')">' +
       '<div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">' +
-        '<div><label class="text-xs text-slate-400">สถานะล่าสุด</label><select id="project-progress-status" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white">' +
+        '<div><label class="text-xs text-slate-400">สถานะล่าสุด</label><select id="project-progress-status" data-dsr-live-save="progress" onchange="dsrQueueProjectProgress(\'' + project.project_id + '\')" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white">' +
         statusOptions.map(function(s) { return '<option value="' + s + '"' + (s === status ? ' selected' : '') + '>' + s + '</option>'; }).join('') + '</select></div>' +
         '<div><label class="text-xs text-slate-400">อัปเดตล่าสุด</label><div class="mt-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-400">' + (project.progress_updated_at ? fmtDate(project.progress_updated_at) : 'ยังไม่มีข้อมูล') + '</div></div>' +
       '</div>' +
-      '<div class="mt-3"><label class="text-xs text-slate-400">สรุปความคืบหน้า / ปัญหาที่พบ</label><textarea id="project-progress-note" rows="3" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="เช่น แบบรอบ 2 รอลูกค้าอนุมัติ">' + esc(project.progress_note || '') + '</textarea></div>' +
+      '<div class="mt-3"><label class="text-xs text-slate-400">สรุปความคืบหน้า / ปัญหาที่พบ</label><textarea id="project-progress-note" data-dsr-live-save="progress" oninput="dsrQueueProjectProgress(\'' + project.project_id + '\')" rows="3" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="เช่น แบบรอบ 2 รอลูกค้าอนุมัติ">' + esc(project.progress_note || '') + '</textarea></div>' +
       '<div class="flex justify-end mt-3"><button class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm" onclick="saveProjectProgress(\'' + project.project_id + '\')">บันทึกความคืบหน้า</button></div>' +
     '</div>' +
     '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4">' +
       '<div class="text-sm font-semibold text-white mb-3">เพิ่ม Timeline</div>' +
-      '<div class="space-y-3"><input id="timeline-title" class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="ชื่องาน / Milestone">' +
+      '<form class="space-y-3" onsubmit="event.preventDefault();addTimelineItem(\'' + project.project_id + '\')"><input id="timeline-title" class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="ชื่องาน / Milestone">' +
       '<div class="grid grid-cols-2 gap-2"><div><label class="text-xs text-slate-500">เริ่ม</label><input id="timeline-start" type="date" class="w-full mt-1 px-2 py-2 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white"></div><div><label class="text-xs text-slate-500">กำหนดเสร็จ</label><input id="timeline-end" type="date" class="w-full mt-1 px-2 py-2 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white"></div></div>' +
       '<textarea id="timeline-note" rows="2" class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="รายละเอียดเพิ่มเติม"></textarea>' +
-      '<button class="w-full px-3 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm" onclick="addTimelineItem(\'' + project.project_id + '\')"><i data-lucide="plus" class="w-4 h-4 inline mr-1"></i>เพิ่มรายการ</button></div>' +
+      '<button type="submit" class="w-full px-3 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm"><i data-lucide="plus" class="w-4 h-4 inline mr-1"></i>เพิ่มรายการ</button></form>' +
     '</div></div>' +
     '<div class="flex items-center justify-between mb-3"><div><h3 class="text-base font-semibold text-white">Project Timeline</h3><div class="text-xs text-slate-500 mt-1">อัปเดตสถานะของแต่ละช่วงงานได้ตลอดเวลา</div></div><span class="text-xs text-slate-500">' + rows.length + ' รายการ</span></div>' +
     '<div class="space-y-3">' + rowHtml + '</div>';
 }
 
 async function saveProjectProgress(projId) {
+  dsrCancelLiveAutosave('progress:' + projId);
   const project = allData.find(r => r.record_type === 'project' && r.project_id === projId);
   if (!project) return;
   const progress = Number(document.getElementById('project-progress-input').value) || 0;
@@ -1117,6 +1053,7 @@ async function saveProjectProgress(projId) {
     progress_updated_at: new Date().toISOString()
   }));
   if (result.isOk) {
+    dsrClearManualPending(project.__backendId);
     showToast('บันทึกความคืบหน้าแล้ว');
     await addLog(projId, 'อัปเดตความคืบหน้า', progress + '% · ' + status);
   } else showToast('บันทึกไม่สำเร็จ', 'error');
@@ -1158,7 +1095,7 @@ function deleteTimelineItem(projId, rowId) {
 }
 
 async function markProjectDone(projId, e) {
-  e.stopPropagation();
+  if (e && e.stopPropagation) e.stopPropagation();
   const proj = allData.find(r => r.record_type === 'project' && r.project_id === projId);
   if (!proj) return;
   if (!canProjectShowDone(projId)) {
@@ -1166,10 +1103,34 @@ async function markProjectDone(projId, e) {
     return;
   }
   showConfirm('ยืนยันว่างาน "' + proj.project_name + '" เสร็จสมบูรณ์แล้ว?\nสถานะจะเปลี่ยนเป็น Done', async function() {
-    const updated = Object.assign({}, proj, { status: 'done' });
+    const closedAt = new Date().toISOString();
+    const updated = Object.assign({}, proj, {
+      status: 'done',
+      project_closed_at: closedAt,
+      updated_at: closedAt
+    });
     const r = await window.dataSdk.update(updated);
-    if (r.isOk) { showToast('✅ โปรเจกต์เสร็จสมบูรณ์'); await addLog(projId, 'เปลี่ยนสถานะ', 'Done'); }
-    else showToast('เกิดข้อผิดพลาด', 'error');
+    if (!r.isOk) {
+      showToast('ปิดโปรเจกต์ไม่สำเร็จ', 'error');
+      return;
+    }
+
+    await addLog(projId, 'เปลี่ยนสถานะ', 'Done');
+    var syncResult = window.dataSdk.flushGoogle
+      ? await window.dataSdk.flushGoogle()
+      : { isOk: false, error: 'not-supported' };
+
+    if (syncResult && syncResult.isOk) {
+      showToast('✅ ปิดโปรเจกต์และซิงก์ Google แล้ว');
+      return;
+    }
+
+    var syncInfo = window.dataSdk.getSyncInfo ? await window.dataSdk.getSyncInfo() : null;
+    if (syncInfo && syncInfo.enabled && syncInfo.configured) {
+      showToast('ปิดโปรเจกต์ในเครื่องแล้ว · รอส่ง Google (' + (syncInfo.pending || 1) + ')', 'error');
+    } else {
+      showToast('ปิดโปรเจกต์ในเครื่องแล้ว · ยังไม่ได้เปิด Google Sync');
+    }
   });
 }
 
@@ -1924,7 +1885,7 @@ function _qtInit(q) {
   if (_qt[q.__backendId]) return _qt[q.__backendId];
   var items = safeParseJSON(q.items_json);
   while (items.length < 10) items.push({desc:'',qty:1,price:0});
-  _qt[q.__backendId] = {q:q, items:items, debounce:null};
+  _qt[q.__backendId] = {q:q, items:items, debounce:null, dirty:_dsrManualPending.has(q.__backendId)};
   return _qt[q.__backendId];
 }
 
@@ -1975,19 +1936,27 @@ function _qtRefreshTotals(qId) {
 }
 
 function _qtSave(qId) {
-  var st = _qt[qId]; if(!st) return;
+  var st = _qt[qId]; if (!st) return;
   clearTimeout(st.debounce);
-  st.debounce = setTimeout(function(){
-    var c = _qtCalc(st);
-    var updated = Object.assign({},st.q,{
-      items_json:JSON.stringify(st.items),
-      subtotal:c.sub, vat_amount:c.vat, client_wht_amount:c.wht, grand_total:c.tot
-    });
-    var i = allData.findIndex(function(d){return d.__backendId===qId;});
-    if(i>=0) allData[i]=updated;
-    st.q = updated;
-    window.dataSdk.update(updated);
-  }, 800);
+  var c = _qtCalc(st);
+  var updated = Object.assign({}, st.q, {
+    items_json: JSON.stringify(st.items),
+    subtotal: c.sub, vat_amount: c.vat, client_wht_amount: c.wht, grand_total: c.tot
+  });
+  st.q = updated;
+  var index = allData.findIndex(function (record) { return record.__backendId === qId; });
+  if (index >= 0) allData[index] = updated;
+  st.dirty = true;
+  dsrMarkManualPending(qId);
+  var stateLabel = document.getElementById('qt-local-state-' + qId);
+  if (stateLabel) stateLabel.textContent = 'แก้ไขในเครื่องแล้ว · ยังไม่ส่ง Google';
+  st.debounce = setTimeout(function () {
+    st.debounce = null;
+    // Keystrokes save to IndexedDB only. Google is contacted by the Save button.
+    var writer = window.dataSdk.updateLocal || window.dataSdk.update;
+    writer.call(window.dataSdk, Object.assign({}, st.q));
+  }, 350);
+  if (typeof dsrShowSyncStatus === 'function') dsrShowSyncStatus(_dsrLastSyncState || {});
 }
 
 function _qtBuildRow(qId, it, i, locked) {
@@ -2051,6 +2020,7 @@ function addQtItem(qId) {
   var tbody=document.getElementById('qt-tbody-'+qId); if(!tbody) return;
   var tr=_qtBuildRow(qId,st.items[idx],idx,false);
   tbody.appendChild(tr);
+  _qtSave(qId);
   if(window.lucide)lucide.createIcons();
   tr.querySelector('input').focus();
 }
@@ -2058,9 +2028,12 @@ function addQtItem(qId) {
 function renderQuotationEditor(q, items, locked, projId) {
   var cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
   // Init state — always reinit from q (fresh render)
-  var st = {q:q, items:safeParseJSON(q.items_json), debounce:null};
-  while (st.items.length < 10) st.items.push({desc:'',qty:1,price:0});
-  _qt[q.__backendId] = st;
+  var st = _qt[q.__backendId];
+  if (!st || !st.debounce) {
+    st = {q:q, items:safeParseJSON(q.items_json), debounce:null, dirty:_dsrManualPending.has(q.__backendId)};
+    while (st.items.length < 10) st.items.push({desc:'',qty:1,price:0});
+    _qt[q.__backendId] = st;
+  }
 
   var qId = q.__backendId;
   var c = _qtCalc(st);
@@ -2107,6 +2080,9 @@ function renderQuotationEditor(q, items, locked, projId) {
         '<option value="3"'+((q.client_wht_rate||0)===3?' selected':'')+'>3%</option>'+
         '<option value="5"'+((q.client_wht_rate||0)===5?' selected':'')+'>5%</option></select></div>'+
       '</div></div>'+
+    (!locked?'<div class="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border border-orange-500/40 bg-orange-950/20 p-3">'+
+      '<div><div id="qt-local-state-'+qId+'" class="text-xs font-semibold text-orange-300">'+(_dsrManualPending.has(qId)?'แก้ไขในเครื่องแล้ว · ยังไม่ส่ง Google':'พร้อมแก้ไขแบบ Offline')+'</div><div class="text-[11px] text-slate-500 mt-0.5">ระหว่างพิมพ์จะไม่เรียก Google Script</div></div>'+
+      '<button type="button" id="qt-save-'+qId+'" class="min-h-[42px] px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm font-semibold flex items-center justify-center gap-2" onclick="saveQuotationToGoogle(\''+qId+'\',this)"><i data-lucide="save" class="w-4 h-4"></i> Save ไป Google</button></div>':'')+
     metaCard+
     '<div class="mb-4 pb-4 border-b border-slate-700">'+
       '<div class="font-semibold text-white">'+(cfg.company_name||defaultConfig.company_name)+'</div>'+
@@ -2142,8 +2118,40 @@ async function updateQuotationMeta(qId, field, value) {
   if (!q) return;
   var updated = Object.assign({}, q); updated[field] = value;
   var i = allData.findIndex(function(d){return d.__backendId===qId;}); if(i>=0) allData[i]=updated;
-  if (_qt[qId]) _qt[qId].q = updated;
-  await window.dataSdk.update(updated);
+  if (_qt[qId]) { _qt[qId].q = updated; _qt[qId].dirty = true; }
+  dsrMarkManualPending(qId);
+  var writer = window.dataSdk.updateLocal || window.dataSdk.update;
+  await writer.call(window.dataSdk, updated);
+  var stateLabel = document.getElementById('qt-local-state-' + qId);
+  if (stateLabel) stateLabel.textContent = 'แก้ไขในเครื่องแล้ว · ยังไม่ส่ง Google';
+}
+
+async function saveQuotationToGoogle(qId, button) {
+  var st = _qt[qId];
+  if (!st) return;
+  if (st.debounce) { clearTimeout(st.debounce); st.debounce = null; }
+  button = button || document.getElementById('qt-save-' + qId);
+  if (button) { button.disabled = true; button.textContent = 'กำลังบันทึก...'; }
+  var result = await recalcQuotation(st.q, st.items, 'google');
+  if (!result || !result.isOk) {
+    showToast('บันทึกใบเสนอราคาไม่สำเร็จ', 'error');
+    if (button) { button.disabled = false; button.textContent = 'Save ไป Google'; }
+    return;
+  }
+  dsrClearManualPending(qId);
+  st.dirty = false;
+  var syncResult = window.dataSdk.flushGoogle ? await window.dataSdk.flushGoogle() : { isOk:false, error:'not-supported' };
+  var stateLabel = document.getElementById('qt-local-state-' + qId);
+  if (syncResult && syncResult.isOk) {
+    if (stateLabel) stateLabel.textContent = 'บันทึกลงเครื่องและ Google แล้ว';
+    showToast('บันทึกลงเครื่องและ Google แล้ว');
+  } else {
+    var info = window.dataSdk.getSyncInfo ? await window.dataSdk.getSyncInfo() : null;
+    var reason = info && info.error ? info.error : 'รอส่ง Google';
+    if (stateLabel) stateLabel.textContent = 'บันทึกในเครื่องแล้ว · ' + reason;
+    showToast('ข้อมูลไม่หาย · ' + reason, 'error');
+  }
+  if (button) { button.disabled = false; button.textContent = 'Save ไป Google'; }
 }
 
 async function createQuotation(projId) {
@@ -2162,17 +2170,21 @@ async function updateVATMode(qId, mode) {
   const q = allData.find(r => r.__backendId === qId);
   if (!q) return;
   q.vat_mode = mode;
-  await recalcQuotation(q, safeParseJSON(q.items_json));
+  await recalcQuotation(q, _qt[qId] ? _qt[qId].items : safeParseJSON(q.items_json), 'local');
+  dsrMarkManualPending(qId);
+  _qtRefreshTotals(qId);
 }
 
 async function updateClientWHT(qId, rate) {
   const q = allData.find(r => r.__backendId === qId);
   if (!q) return;
   q.client_wht_rate = parseFloat(rate) || 0;
-  await recalcQuotation(q, safeParseJSON(q.items_json));
+  await recalcQuotation(q, _qt[qId] ? _qt[qId].items : safeParseJSON(q.items_json), 'local');
+  dsrMarkManualPending(qId);
+  _qtRefreshTotals(qId);
 }
 
-async function recalcQuotation(q, items) {
+async function recalcQuotation(q, items, saveMode) {
   const subtotal = roundHU(items.reduce(function(s,it) { return s + (it.qty||0)*(it.price||0); }, 0));
   let vatAmount, grandTotal, whtAmount;
   if (q.vat_mode === 'excluded') {
@@ -2190,12 +2202,16 @@ async function recalcQuotation(q, items) {
     grandTotal = roundHU(subtotal - whtAmount);
   }
   const updated = Object.assign({}, q, { items_json: JSON.stringify(items), subtotal: subtotal, vat_amount: vatAmount, client_wht_rate: (q.client_wht_rate||0), client_wht_amount: whtAmount, grand_total: grandTotal });
-  await window.dataSdk.update(updated);
-  await cascadeInstallments(q.project_id, grandTotal);
-  await cascadePartnerSplits(q.project_id);
+  var useGoogle = saveMode !== 'local';
+  var writer = useGoogle ? window.dataSdk.update : (window.dataSdk.updateLocal || window.dataSdk.update);
+  var result = await writer.call(window.dataSdk, updated);
+  if (_qt[q.__backendId]) _qt[q.__backendId].q = updated;
+  await cascadeInstallments(q.project_id, grandTotal, useGoogle);
+  await cascadePartnerSplits(q.project_id, useGoogle);
+  return result;
 }
 
-async function cascadeInstallments(projId, grandTotal) {
+async function cascadeInstallments(projId, grandTotal, useGoogle) {
   const installments = getInstallments(projId);
   if (installments.length === 0) return;
   let lockedTotal = 0;
@@ -2217,12 +2233,13 @@ async function cascadeInstallments(projId, grandTotal) {
         const prev = unlocked.slice(0,i).reduce(function(s,uu) { return totalPct > 0 ? s + roundHU(remaining*(uu.split_value||0)/totalPct) : s + roundHU(remaining/unlocked.length); }, 0);
         newAmt = roundHU(remaining - prev);
       }
-      await window.dataSdk.update(Object.assign({}, u, { amount: newAmt }));
+      var writer = useGoogle ? window.dataSdk.update : (window.dataSdk.updateLocal || window.dataSdk.update);
+      await writer.call(window.dataSdk, Object.assign({}, u, { amount: newAmt }));
     }
   }
 }
 
-async function cascadePartnerSplits(projId) {
+async function cascadePartnerSplits(projId, useGoogle) {
   const q = getQuotation(projId);
   const splits = getPartnerSplits(projId);
   if (!q || splits.length === 0) return;
@@ -2236,7 +2253,8 @@ async function cascadePartnerSplits(projId) {
     const { vatEnabled, vatRate } = resolvePartnerVat(sp);
     const vatAmt = vatEnabled ? roundHU(partnerAmt * vatRate / 100) : 0;
     const whtAmt = roundHU(partnerAmt * whtRate / 100);
-    await window.dataSdk.update(Object.assign({}, sp, {
+    var writer = useGoogle ? window.dataSdk.update : (window.dataSdk.updateLocal || window.dataSdk.update);
+    await writer.call(window.dataSdk, Object.assign({}, sp, {
       partner_amount: partnerAmt,
       partner_vat_enabled: vatEnabled, partner_vat_rate: vatRate, partner_vat_amount: vatAmt,
       partner_wht_amount: whtAmt,
@@ -2255,6 +2273,7 @@ function showInstallmentForm(projId) {
     '<div class="col-span-4"><label class="text-xs text-slate-400">Condition / เงื่อนไขงวด</label><input id="inst-condition" type="text" placeholder="เช่น ชำระเมื่ออนุมัติแบบ Concept Design" class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white"></div>' +
     '<div class="col-span-4 flex justify-end gap-2"><button type="submit" class="px-3 py-1.5 bg-orange-600 text-white rounded text-xs" id="inst-submit">เพิ่ม</button><button type="button" class="px-3 py-1.5 bg-slate-700 text-white rounded text-xs" onclick="document.getElementById(\'inst-form-area\').innerHTML=\'\'">ยกเลิก</button></div>' +
     '</form></div>';
+  setTimeout(function () { dsrRestoreFormDrafts(); }, 0);
 }
 
 async function saveInstallment(e, projId) {
@@ -2385,7 +2404,7 @@ function renderPieAllocPanel(projId, profitBase, splits) {
 
   return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4">' +
     '<div class="flex items-center justify-between mb-4">' +
-    '<div><div class="text-sm font-semibold text-white">แบ่งส่วนกำไร</div><div class="text-xs text-slate-500">รวมต้องเท่ากับ 100%</div></div>' +
+    '<div><div class="text-sm font-semibold text-white">แบ่งส่วนกำไร</div><div class="text-xs text-slate-500">กดปลดล็อก → กรอกให้เสร็จ → กดบันทึกสัดส่วน (รวมต้องเท่ากับ 100%)</div></div>' +
     '<div class="flex items-center gap-3">' +
     (splits.filter(s => !s.share_locked).length > 1 ? '<button class="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded text-xs flex items-center gap-1" onclick="equalizeUnlocked(\'' + projId + '\',' + profitBase + ')" title="แบ่งที่ยังไม่ล้อคให้เท่ากัน"><i data-lucide=\"equal\" class=\"w-3 h-3\"></i> เฉลี่ย</button>' : '') +
     '<div class="text-right"><div class="text-xs text-slate-500">ใช้ไปแล้ว</div><div class="mono text-sm font-bold ' + (Math.abs(totalPct-100)<0.01 ? 'text-emerald-400' : totalPct>100 ? 'text-red-400' : 'text-amber-400') + '">' + roundHU(totalPct) + '%</div></div>' +
@@ -2421,25 +2440,26 @@ function renderAllocRow(sp, idx, profitBase, projId) {
   const netAmt = roundHU(amount + vatAmt - whtAmt);
   const color = PIE_COLORS[idx % PIE_COLORS.length];
   const isLocked = sp.share_locked || false;
-  const sliderHtml = `<input type="range" min="0" max="100" step="0.0001" value="${pct}" class="w-full cursor-pointer" style="accent-color:${color}" ${isLocked ? 'disabled' : ''} oninput="onAllocSlideDraft('${sp.__backendId}',${profitBase},${whtRate},${vatEnabled},${vatRate},this.value)" onchange="onAllocSlide('${sp.__backendId}','${projId}',${profitBase},this.value)">`;
+  const sliderHtml = `<input type="range" min="0" max="100" step="0.0001" value="${pct}" data-alloc-slider="${sp.__backendId}" class="dsr-alloc-slider w-full cursor-pointer" style="accent-color:${color}" ${isLocked ? 'disabled' : ''} oninput="onAllocSlideDraft('${sp.__backendId}',${profitBase},${whtRate},${vatEnabled},${vatRate},this.value)">`;
   const vatBadge = vatEnabled ? `<span class="text-[10px] text-sky-400 bg-sky-900/40 px-1 rounded">VAT ${vatRate}%</span>` : '';
   const vatLine = vatEnabled ? `<div class="text-xs mono text-sky-400">+${fmt(vatAmt)} VAT</div>` : '';
-  return `<div class="p-2.5 rounded-lg bg-slate-800/60 border border-slate-700/50 overflow-hidden">
+  return `<div class="p-2.5 rounded-lg ${isLocked ? 'bg-slate-800/60 border-slate-700/50' : 'bg-orange-950/20 border-orange-500/40'} border overflow-hidden">
     <div class="flex items-center gap-3">
       <div class="w-3 h-3 rounded-full flex-shrink-0" style="background:${color}"></div>
       <div class="min-w-0 flex-1 md:w-24 md:flex-none"><div class="text-xs font-medium text-white truncate">${sp.partner_name}</div><div class="flex items-center gap-1 flex-wrap"><span class="text-xs text-slate-500">WHT ${whtRate}%</span>${vatBadge}</div></div>
       <div class="hidden md:block flex-1 min-w-[140px]">${sliderHtml}</div>
       <div class="flex items-center gap-2 flex-shrink-0">
-        <button class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${isLocked ? 'bg-amber-600/30 text-amber-400' : 'bg-slate-700 text-slate-500 hover:text-white'}" onclick="toggleAllocLock('${sp.__backendId}','${projId}',${profitBase})"><i data-lucide="${isLocked ? 'lock' : 'lock-open'}" class="w-3 h-3"></i></button>
+        <button type="button" class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${isLocked ? 'bg-amber-600/30 text-amber-400' : 'bg-orange-600/30 text-orange-300 hover:text-white'}" title="${isLocked ? 'ปลดล็อกเพื่อแก้ไข' : 'ยกเลิกการแก้ไขและล็อก'}" onclick="toggleAllocLock('${sp.__backendId}','${projId}',${profitBase},this)"><i data-lucide="${isLocked ? 'lock' : 'lock-open'}" class="w-3 h-3"></i></button>
         ${!sp.partner_paid ? `<button class="w-7 h-7 rounded-lg bg-slate-700 flex items-center justify-center text-slate-500 hover:text-red-400 flex-shrink-0" onclick="removeSplitFromPie('${sp.__backendId}','${projId}',${profitBase})"><i data-lucide="x" class="w-3 h-3"></i></button>` : '<div class="w-7"></div>'}
       </div>
     </div>
     <div class="mt-2 md:hidden">${sliderHtml}</div>
     <div class="mt-2 grid grid-cols-2 gap-2 md:grid-cols-[80px_160px_100px] md:items-start md:justify-end">
-      <div class="min-w-0"><input type="number" min="0" max="100" step="0.0001" id="alloc-pct-${sp.__backendId}" value="${pct}" class="w-full px-2 py-1 bg-slate-700 border border-slate-600 rounded text-xs text-white mono text-center" ${isLocked ? 'disabled' : ''} onfocus="this.dataset.editing='1'" onblur="delete this.dataset.editing;onAllocInput('${sp.__backendId}','${projId}',${profitBase},this.value)" onkeydown="if(event.key==='Enter'){this.blur()}"><div class="text-xs text-slate-600 text-right pr-1">%</div></div>
-      <div class="min-w-0"><input id="alloc-gross-${sp.__backendId}" type="text" inputmode="decimal" value="${fmt(amount)}" class="w-full px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white mono text-right" ${isLocked ? 'disabled' : ''} onblur="onAllocGrossInput('${sp.__backendId}','${projId}',${profitBase},this.value)" onkeydown="if(event.key==='Enter'){this.blur()}"><div class="text-xs text-slate-600 text-right pr-1">ส่วนแบ่งก่อน VAT/WHT</div></div>
-      <div class="col-span-2 md:col-span-1 min-w-0 text-right">${vatLine}<div class="text-xs mono text-amber-400">-${fmt(whtAmt)} WHT</div><div class="text-xs mono text-emerald-400">${fmt(netAmt)}</div><div class="text-xs text-slate-600 pr-1">สุทธิที่จ่าย</div></div>
+      <div class="min-w-0"><input type="text" inputmode="decimal" id="alloc-pct-${sp.__backendId}" value="${pct}" class="w-full px-2 py-1 bg-slate-700 border border-slate-600 rounded text-xs text-white mono text-center" ${isLocked ? 'disabled' : ''} oninput="onAllocPctDraft('${sp.__backendId}',${profitBase},${whtRate},${vatEnabled},${vatRate},this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();saveAllocRow('${sp.__backendId}','${projId}',${profitBase})}"><div class="text-xs text-slate-600 text-right pr-1">% ใส่ทศนิยมได้ เช่น 0.5</div></div>
+      <div class="min-w-0"><input id="alloc-gross-${sp.__backendId}" type="text" inputmode="decimal" value="${fmt(amount)}" class="w-full px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white mono text-right" ${isLocked ? 'disabled' : ''} oninput="onAllocGrossDraft('${sp.__backendId}',${profitBase},${whtRate},${vatEnabled},${vatRate},this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();saveAllocRow('${sp.__backendId}','${projId}',${profitBase})}"><div class="text-xs text-slate-600 text-right pr-1">ส่วนแบ่งก่อน VAT/WHT</div></div>
+      <div class="col-span-2 md:col-span-1 min-w-0 text-right"><div id="alloc-vat-${sp.__backendId}" class="text-xs mono text-sky-400">${vatEnabled ? '+' + fmt(vatAmt) + ' VAT' : ''}</div><div id="alloc-wht-${sp.__backendId}" class="text-xs mono text-amber-400">-${fmt(whtAmt)} WHT</div><div id="alloc-net-${sp.__backendId}" class="text-xs mono text-emerald-400">${fmt(netAmt)}</div><div class="text-xs text-slate-600 pr-1">สุทธิที่จ่าย</div></div>
     </div>
+    ${isLocked ? '' : `<div class="mt-3 flex items-center justify-end gap-2"><span class="text-[11px] text-orange-300 mr-auto">กำลังแก้ไข — ยังไม่บันทึก</span><button type="button" id="alloc-save-${sp.__backendId}" class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1" onclick="saveAllocRow('${sp.__backendId}','${projId}',${profitBase},this)"><i data-lucide="save" class="w-3.5 h-3.5"></i> บันทึกสัดส่วน</button></div>`}
     </div>`;
 }
 
@@ -2472,7 +2492,14 @@ async function equalizeUnlocked(projId, profitBase) {
     var idx = allData ? allData.findIndex(function(d){ return d.__backendId === rec.__backendId; }) : -1;
     if (idx >= 0) allData[idx] = rec;
   });
-  await Promise.all(batch.map(function(rec) { return window.dataSdk.update(rec); }));
+  for (const rec of batch) {
+    const writer = window.dataSdk.updateLocal || window.dataSdk.update;
+    const result = await writer.call(window.dataSdk, rec);
+    if (!result || !result.isOk) { showToast('เฉลี่ยสัดส่วนไม่สำเร็จ', 'error'); return; }
+    dsrMarkManualPending(rec.__backendId);
+  }
+  showToast('เฉลี่ยสัดส่วนแล้ว · ตรวจสอบแล้วกดบันทึกแต่ละรายการ');
+  rerenderPartnerAllocation(projId);
 }
 
 async function addPartnerToPie(projId, profitBase) {
@@ -2498,19 +2525,63 @@ async function addPartnerToPie(projId, profitBase) {
     partner_wht_amount: whtAmt, partner_net_amount: netAmt,
     share_locked: false, partner_paid: false, created_at: new Date().toISOString()
   });
-  if (result.isOk) { showToast('เพิ่ม ' + partnerName + ' (' + newPct + '%)' + (vatEnabled ? ' · จด VAT ' + vatRate + '%' : '')); await addLog(projId, 'เพิ่มพาร์ทเนอร์', partnerName + ' ' + newPct + '%' + (vatEnabled ? ' VAT' : '')); }
+  if (result.isOk) {
+    showToast('เพิ่ม ' + partnerName + ' (' + newPct + '%)' + (vatEnabled ? ' · จด VAT ' + vatRate + '%' : ''));
+    await addLog(projId, 'เพิ่มพาร์ทเนอร์', partnerName + ' ' + newPct + '%' + (vatEnabled ? ' VAT' : ''));
+    rerenderPartnerAllocation(projId);
+  } else showToast('เพิ่มพาร์ทเนอร์ไม่สำเร็จ', 'error');
 }
 
 function parseMoneyInput(v) {
   return parseFloat(String(v == null ? '' : v).replace(/,/g, '').trim()) || 0;
 }
 
-async function onAllocGrossInput(splitId, projId, profitBase, grossVal) {
-  // User types gross partner share before WHT, e.g. 20,000 -> WHT 3% = 600, net = 19,400
+function parsePercentInput(v) {
+  var raw = String(v == null ? '' : v).trim().replace(/\s/g, '');
+  if (!raw) return null;
+  if (raw.indexOf(',') >= 0 && raw.indexOf('.') < 0) raw = raw.replace(',', '.');
+  else raw = raw.replace(/,/g, '');
+  var number = parseFloat(raw);
+  return Number.isFinite(number) ? number : null;
+}
+
+function updateAllocDraftPreview(splitId, profitBase, whtRate, vatEnabled, vatRate, pct) {
+  pct = Math.max(0, Math.min(100, Number(pct) || 0));
+  const partnerAmt = roundHU(profitBase * pct / 100);
+  const vatAmt = vatEnabled ? roundHU(partnerAmt * vatRate / 100) : 0;
+  const whtAmt = roundHU(partnerAmt * whtRate / 100);
+  const netAmt = roundHU(partnerAmt + vatAmt - whtAmt);
+  const vatEl = document.getElementById('alloc-vat-' + splitId);
+  const whtEl = document.getElementById('alloc-wht-' + splitId);
+  const netEl = document.getElementById('alloc-net-' + splitId);
+  if (vatEl) vatEl.textContent = vatEnabled ? '+' + fmt(vatAmt) + ' VAT' : '';
+  if (whtEl) whtEl.textContent = '-' + fmt(whtAmt) + ' WHT';
+  if (netEl) netEl.textContent = fmt(netAmt);
+  return partnerAmt;
+}
+
+function onAllocPctDraft(splitId, profitBase, whtRate, vatEnabled, vatRate, value) {
+  const parsed = parsePercentInput(value);
+  if (parsed === null) return;
+  const pct = Math.max(0, Math.min(100, parsed));
+  const partnerAmt = updateAllocDraftPreview(splitId, profitBase, whtRate, vatEnabled, vatRate, pct);
+  const grossEl = document.getElementById('alloc-gross-' + splitId);
+  if (grossEl && document.activeElement !== grossEl) grossEl.value = fmt(partnerAmt);
+  document.querySelectorAll('.dsr-alloc-slider').forEach(function(slider) {
+    if (slider.dataset.allocSlider === splitId && document.activeElement !== slider) slider.value = pct;
+  });
+}
+
+function onAllocGrossDraft(splitId, profitBase, whtRate, vatEnabled, vatRate, grossVal) {
   const gross = parseMoneyInput(grossVal);
   if (profitBase <= 0) return;
   const newPct = roundPct(gross / profitBase * 100);
-  await _applyAllocChange(splitId, projId, profitBase, newPct);
+  const pctEl = document.getElementById('alloc-pct-' + splitId);
+  if (pctEl) pctEl.value = newPct;
+  updateAllocDraftPreview(splitId, profitBase, whtRate, vatEnabled, vatRate, newPct);
+  document.querySelectorAll('.dsr-alloc-slider').forEach(function(slider) {
+    if (slider.dataset.allocSlider === splitId) slider.value = Math.max(0, Math.min(100, newPct));
+  });
 }
 
 function onAllocSlideDraft(splitId, profitBase, whtRate, vatEnabled, vatRate, val) {
@@ -2519,19 +2590,15 @@ function onAllocSlideDraft(splitId, profitBase, whtRate, vatEnabled, vatRate, va
   if (pctEl && !pctEl.dataset.editing) pctEl.value = pct;
   const grossEl = document.getElementById('alloc-gross-' + splitId);
   if (grossEl && document.activeElement !== grossEl) {
-    const partnerAmt = roundHU(profitBase * pct / 100);
+    const partnerAmt = updateAllocDraftPreview(splitId, profitBase, whtRate, vatEnabled, vatRate, pct);
     grossEl.value = fmt(partnerAmt);
   }
+  document.querySelectorAll('.dsr-alloc-slider').forEach(function(slider) {
+    if (slider.dataset.allocSlider === splitId && document.activeElement !== slider) slider.value = pct;
+  });
 }
 
-async function onAllocSlide(splitId, projId, profitBase, val) {
-  await _applyAllocChange(splitId, projId, profitBase, parseFloat(val)||0);
-}
-async function onAllocInput(splitId, projId, profitBase, val) {
-  await _applyAllocChange(splitId, projId, profitBase, parseFloat(val)||0);
-}
-
-async function _applyAllocChange(splitId, projId, profitBase, newPct) {
+async function _applyAllocChange(splitId, projId, profitBase, newPct, lockCurrent) {
   newPct = Math.max(0, Math.min(100, roundPct(newPct)));
   const splits = getPartnerSplits(projId);
   const thisSp = splits.find(s => s.__backendId === splitId);
@@ -2543,7 +2610,9 @@ async function _applyAllocChange(splitId, projId, profitBase, newPct) {
   const remaining = roundPct(maxAllowed - newPct);
   // Batch all updates — save concurrently, no sequential re-renders
   const batch = [];
-  batch.push(_buildSplitUpdate(thisSp, newPct, profitBase));
+  const thisUpdate = _buildSplitUpdate(thisSp, newPct, profitBase);
+  if (lockCurrent) thisUpdate.share_locked = true;
+  batch.push(thisUpdate);
   if (unlocked.length > 0) {
     const totalPct = unlocked.reduce(function(sum,s) { return sum + (s.partner_share_value||0); }, 0);
     for (let i = 0; i < unlocked.length; i++) {
@@ -2561,8 +2630,13 @@ async function _applyAllocChange(splitId, projId, profitBase, newPct) {
     var idx = allData ? allData.findIndex(function(d){ return d.__backendId === rec.__backendId; }) : -1;
     if (idx >= 0) allData[idx] = rec;
   });
-  // Save all in parallel, then single re-render
-  await Promise.all(batch.map(function(rec) { return window.dataSdk.update(rec); }));
+  // Save sequentially so the local in-memory list cannot lose a concurrent update.
+  for (const rec of batch) {
+    const result = await window.dataSdk.update(rec);
+    if (!result || !result.isOk) return { isOk: false, error: (result && result.error) || 'บันทึกไม่สำเร็จ' };
+    dsrClearManualPending(rec.__backendId);
+  }
+  return { isOk: true, value: newPct };
 }
 
 function _buildSplitUpdate(sp, pct, profitBase) {
@@ -2583,20 +2657,62 @@ async function _saveSplitPct(sp, pct, profitBase) {
   await window.dataSdk.update(_buildSplitUpdate(sp, pct, profitBase));
 }
 
-async function toggleAllocLock(splitId, projId, profitBase) {
+function rerenderPartnerAllocation(projId) {
+  const main = document.getElementById('main-content');
+  if (!main || currentPage !== 'project-detail' || window._navCtx !== projId) return;
+  const scrollTop = main.scrollTop;
+  _dsrDirty = false;
+  renderProjectDetail(main, projId);
+  main.scrollTop = scrollTop;
+  if (window.lucide) lucide.createIcons();
+}
+
+async function saveAllocRow(splitId, projId, profitBase, button) {
+  const pctEl = document.getElementById('alloc-pct-' + splitId);
+  const newPct = pctEl ? parsePercentInput(pctEl.value) : null;
+  if (newPct === null || newPct < 0 || newPct > 100) {
+    showToast('กรุณาใส่เปอร์เซ็นต์ 0–100 เช่น 0.5', 'error');
+    if (pctEl) pctEl.focus();
+    return;
+  }
+  button = button || document.getElementById('alloc-save-' + splitId);
+  if (button) { button.disabled = true; button.textContent = 'กำลังบันทึก...'; }
+  const result = await _applyAllocChange(splitId, projId, profitBase, newPct, true);
+  if (!result || !result.isOk) {
+    showToast((result && result.error) || 'บันทึกสัดส่วนไม่สำเร็จ', 'error');
+    if (button) { button.disabled = false; button.textContent = 'บันทึกสัดส่วน'; }
+    return;
+  }
+  showToast('บันทึก ' + roundPct(result.value) + '% และล็อกแล้ว');
+  rerenderPartnerAllocation(projId);
+}
+
+async function toggleAllocLock(splitId, projId, profitBase, button) {
   const sp = allData.find(r => r.__backendId === splitId);
   if (!sp) return;
-  await window.dataSdk.update(Object.assign({}, sp, { share_locked: !sp.share_locked }));
-  showToast(sp.share_locked ? 'ปลดล็อคแล้ว' : 'ล็อคแล้ว');
+  if (button) button.disabled = true;
+  const nextLocked = !sp.share_locked;
+  const writer = window.dataSdk.updateLocal || window.dataSdk.update;
+  const result = await writer.call(window.dataSdk, Object.assign({}, sp, { share_locked: nextLocked }));
+  if (!result || !result.isOk) {
+    showToast('เปลี่ยนสถานะล็อกไม่สำเร็จ', 'error');
+    if (button) button.disabled = false;
+    return;
+  }
+  if (!nextLocked) dsrMarkManualPending(sp.__backendId);
+  showToast(nextLocked ? 'ล็อกแล้ว' : 'ปลดล็อกแล้ว · กรอกเสร็จแล้วกดบันทึกสัดส่วน');
+  rerenderPartnerAllocation(projId);
 }
 
 async function removeSplitFromPie(splitId, projId, profitBase) {
   const sp = allData.find(r => r.__backendId === splitId);
   if (!sp) return;
   showConfirm('ลบ ' + sp.partner_name + ' ออกจากการแบ่งกำไร?', async function() {
-    await window.dataSdk.delete(sp);
+    const result = await window.dataSdk.delete(sp);
+    if (!result || !result.isOk) { showToast('ลบไม่สำเร็จ', 'error'); return; }
     showToast('ลบแล้ว');
     await addLog(projId, 'ลบพาร์ทเนอร์', sp.partner_name);
+    rerenderPartnerAllocation(projId);
   });
 }
 
@@ -2679,7 +2795,11 @@ function getPartnerInsts(splitId) {
 
 function clearPartnerInstForm(splitId) {
   const el = document.getElementById('pinst-form-' + splitId);
-  if (el) el.innerHTML = '';
+  if (el) {
+    const group = el.querySelector('[data-dsr-draft-group]');
+    if (group) dsrClearFormDraft(group);
+    el.innerHTML = '';
+  }
 }
 
 function showPartnerInstForm(splitId) {
@@ -2699,7 +2819,7 @@ function showPartnerInstForm(splitId) {
 
   const formArea = document.getElementById('pinst-form-' + splitId);
   if (!formArea) return;
-  formArea.innerHTML = `<div class="mt-3 p-3 bg-slate-900 border border-slate-700 rounded-lg fade-in">
+  formArea.innerHTML = `<div data-dsr-draft-group="partner-inst:${splitId}" class="mt-3 p-3 bg-slate-900 border border-slate-700 rounded-lg fade-in">
     <div class="text-xs text-slate-400 mb-2">เพิ่มงวดการจ่าย (ยอดก่อนหัก คงเหลือ: <span class="mono text-white">${fmt(remaining)}</span> บาท)${vatBadge}</div>
     <div class="grid grid-cols-1 md:grid-cols-6 gap-2 items-end">
       <div><div class="text-[11px] text-slate-500 mb-1">งวดอัตโนมัติ</div><input id="pinst-no-${splitId}" type="text" value="งวดที่ ${nextInstNo}" readonly class="w-full px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white text-center font-medium"></div>
@@ -2711,6 +2831,7 @@ function showPartnerInstForm(splitId) {
     </div>
     <div id="pinst-calc-${splitId}" class="mt-2 text-xs text-slate-500">เลือกจำนวนเงินหรือเปอร์เซ็นต์ ระบบจะคำนวณอีกช่องให้อัตโนมัติ</div>
   </div>`;
+  setTimeout(function () { dsrRestoreFormDrafts(); }, 0);
 }
 
 function updatePartnerInstCalc(splitId, grossTotal, whtRate, vatEnabled, vatRate) {
@@ -2765,7 +2886,7 @@ async function savePartnerInst(splitId) {
   const nextInstIndex = existInsts.length ? Math.max.apply(null, existInsts.map(function(i) { return i.inst_index || 0; })) + 1 : 0;
   const instVatAmt = instVatEnabled ? roundHU(amt * instVatRate / 100) : 0;
   const instWhtAmt = roundHU(amt * whtRate / 100);
-  await window.dataSdk.create({
+  const result = await window.dataSdk.create({
     record_type: 'partner_installment',
     split_id: splitId,
     project_id: sp.project_id,
@@ -2781,6 +2902,9 @@ async function savePartnerInst(splitId) {
     paid: false,
     created_at: new Date().toISOString()
   });
+  if (!result.isOk) { showToast('ยังบันทึกงวดไม่ได้ กรุณาตรวจสอบสถานะการบันทึก', 'error'); return; }
+  const savedDraftGroup = noteEl && noteEl.closest('[data-dsr-draft-group]');
+  if (savedDraftGroup) dsrClearFormDraft(savedDraftGroup);
   showToast('เพิ่มงวดสำเร็จ');
   await addLog(sp.project_id, 'เพิ่มงวดจ่ายพาร์ทเนอร์', sp.partner_name + ' งวด ' + (nextInstIndex + 1) + ' จำนวน ' + fmt(amt) + ' บาท' + (mode === 'percent' ? ' (' + Number(percentValue).toFixed(2).replace(/\.00$/,'') + '%)' : ''));
 }
@@ -2953,11 +3077,66 @@ function renderPartners(el) {
 }
 
 // ===== PAGE: DOCUMENTS =====
+function docDateValue(value) {
+  if (!value) return 0;
+  const parsed = new Date(value).getTime();
+  return isNaN(parsed) ? 0 : parsed;
+}
+
+function docTypeLabel(type) {
+  return type === 'QT'  ? 'ใบเสนอราคา' :
+         type === 'INV' ? 'ใบแจ้งหนี้' :
+         type === 'REC' ? 'ใบเสร็จลูกค้า' :
+         type === 'PR'  ? 'ใบรับเงินพาร์ทเนอร์' :
+         type === 'EXT' ? 'เอกสารภายนอก / ไฟล์แนบ' :
+         type === 'WHT' ? 'หนังสือหัก ณ ที่จ่าย' : type;
+}
+
+function docTypeSearchTerms(type) {
+  return type === 'QT'  ? 'qt quotation ใบเสนอราคา' :
+         type === 'INV' ? 'inv invoice ใบแจ้งหนี้' :
+         type === 'REC' ? 'rec receipt ใบเสร็จลูกค้า ใบเสร็จรับเงิน' :
+         type === 'PR'  ? 'pr partner receipt ใบรับเงินพาร์ทเนอร์' :
+         type === 'EXT' ? 'ext external เอกสารภายนอก ไฟล์แนบ' :
+         type === 'WHT' ? 'wht withholding tax หนังสือหัก ณ ที่จ่าย' : type;
+}
+
+function _docSearchDocuments(input) {
+  const query = ((input && input.value) || '').trim().toLowerCase();
+  window.docSearchQuery = input ? input.value : '';
+  let visibleDocs = 0;
+  let visibleGroups = 0;
+  document.querySelectorAll('[data-doc-group]').forEach(function(group) {
+    const projectMatch = !query || (group.getAttribute('data-project-search') || '').includes(query);
+    const totalDocs = Number(group.getAttribute('data-doc-total') || 0);
+    let groupDocs = 0;
+    group.querySelectorAll('[data-doc-row]').forEach(function(row) {
+      const match = projectMatch || (row.getAttribute('data-doc-search') || '').includes(query);
+      row.style.display = match ? '' : 'none';
+      if (match) groupDocs++;
+    });
+    const showGroup = groupDocs > 0 || (totalDocs === 0 && projectMatch);
+    group.style.display = showGroup ? '' : 'none';
+    const countEl = group.querySelector('[data-doc-group-count]');
+    if (countEl) countEl.textContent = groupDocs + ' เอกสาร';
+    if (showGroup) {
+      visibleGroups++;
+      visibleDocs += groupDocs;
+    }
+  });
+  const resultCount = document.getElementById('doc-result-count');
+  if (resultCount) resultCount.textContent = 'พบ ' + visibleDocs + ' เอกสาร';
+  const empty = document.getElementById('doc-search-empty');
+  if (empty) empty.classList.toggle('hidden', visibleGroups > 0 || !query);
+}
+
 function renderDocuments(el) {
   const projects = getProjects();
   const selectedClient = window.docClientFilter || '';
   const selectedMonth  = window.docMonthFilter  || '';
   const selectedDay    = window.docDayFilter    || '';
+  const selectedType   = window.docTypeFilter   || '';
+  const searchQuery    = window.docSearchQuery  || '';
   const clients = Array.from(new Set(projects.map(function(p){ return p.client_name||''; }).filter(Boolean))).sort();
 
   const projectDocs = projects.map(function(p) {
@@ -2986,7 +3165,14 @@ function renderDocuments(el) {
     byType('external_doc').filter(function(d){ return d.project_id===p.project_id; }).forEach(function(d) {
       docs.push({ type:'EXT', num:d.ext_doc_name||'เอกสาร', date:d.ext_doc_date, projectId:p.project_id, extId:d.__backendId, extData:d.ext_doc_data, extFileType:d.ext_doc_file_type });
     });
+    docs.sort(function(a,b) {
+      return docDateValue(b.date) - docDateValue(a.date) || String(a.num||'').localeCompare(String(b.num||''), 'th');
+    });
     return { project:p, docs:docs };
+  }).sort(function(a,b) {
+    const aLatest = a.docs.length ? docDateValue(a.docs[0].date) : docDateValue(a.project.created_at);
+    const bLatest = b.docs.length ? docDateValue(b.docs[0].date) : docDateValue(b.project.created_at);
+    return bLatest - aLatest || String(a.project.project_name||'').localeCompare(String(b.project.project_name||''), 'th');
   });
 
   const monthSet = new Set();
@@ -2998,12 +3184,13 @@ function renderDocuments(el) {
 
   const filteredGroups = projectDocs.map(function(g){
     let docs=g.docs;
+    if(selectedType) docs=docs.filter(function(d){ return d.type===selectedType; });
     if(selectedMonth) docs=docs.filter(function(d){ return docMonth(d)===selectedMonth; });
     if(selectedDay) docs=docs.filter(function(d){ return docDay(d)===selectedDay; });
     return { project:g.project, docs:docs };
   }).filter(function(g){
     if(selectedClient && g.project.client_name!==selectedClient) return false;
-    return g.docs.length>0 || (!selectedMonth&&!selectedDay&&!selectedClient);
+    return g.docs.length>0 || (!selectedMonth&&!selectedDay&&!selectedClient&&!selectedType);
   });
   const allFilteredDocs = filteredGroups.reduce(function(arr,g){ return arr.concat(g.docs); },[]);
   const partnerReceiptDocs = allFilteredDocs.filter(function(d){ return d.type==='PR'; });
@@ -3011,33 +3198,44 @@ function renderDocuments(el) {
   const clientReceiptDocs  = allFilteredDocs.filter(function(d){ return d.type==='REC'; });
   const extDocs            = allFilteredDocs.filter(function(d){ return d.type==='EXT'; });
 
-  el.innerHTML = '<div class="p-6 fade-in"><div class="flex items-center justify-between mb-1"><h1 class="text-2xl font-bold text-white">เอกสาร & พิมพ์</h1></div><p class="text-slate-400 text-sm mb-4">เลือกดูเอกสารตามลูกค้า เดือน หรือวันที่</p>' +
+  el.innerHTML = '<div class="p-4 md:p-6 fade-in"><div class="flex items-center justify-between mb-1"><h1 class="text-2xl font-bold text-white">เอกสาร & พิมพ์</h1></div><p class="text-slate-400 text-sm mb-4">ค้นหาจากชื่อโปรเจกต์ ลูกค้า หรือเลขเอกสาร และเลือกประเภทที่ต้องการ</p>' +
     '<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">' +
       '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">Partner Receipt</div><div class="mono text-2xl text-sky-400 font-bold">'+partnerReceiptDocs.length+'</div></div>' +
       '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">Partner WHT</div><div class="mono text-2xl text-red-400 font-bold">'+whtDocs.length+'</div></div>' +
       '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">Client Receipt</div><div class="mono text-2xl text-emerald-400 font-bold">'+clientReceiptDocs.length+'</div></div>' +
       '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">เอกสารภายนอก</div><div class="mono text-2xl text-purple-400 font-bold">'+extDocs.length+'</div></div>' +
     '</div>' +
-    '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-5"><div class="grid md:grid-cols-4 gap-3 items-end">' +
-      '<div><label class="text-xs text-slate-400">ลูกค้า</label><select class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" onchange="window.docClientFilter=this.value; renderDocuments(document.getElementById(\'main-content\'))">' +
+    '<div class="bg-slate-900 border border-orange-500/50 rounded-xl p-4 mb-5 shadow-lg shadow-orange-950/20">' +
+      '<div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">' +
+        '<div class="md:col-span-2"><label for="doc-search-input" class="text-sm font-semibold text-orange-300 flex items-center gap-1.5"><i data-lucide="search" class="w-4 h-4"></i> ค้นหาเอกสาร</label>' +
+          '<div class="relative mt-1.5"><i data-lucide="search" class="w-5 h-5 absolute left-3.5 top-1/2 -translate-y-1/2 text-orange-400 pointer-events-none"></i>' +
+          '<input id="doc-search-input" type="search" value="'+esc(searchQuery)+'" autocomplete="off" enterkeyhint="search" placeholder="พิมพ์ชื่อโปรเจกต์ ลูกค้า หรือเลขเอกสาร..." oninput="_docSearchDocuments(this)" class="w-full min-h-[48px] pl-11 pr-4 py-3 bg-slate-950 border-2 border-orange-500/70 rounded-xl text-base text-white placeholder:text-slate-500 focus:border-orange-400 focus:ring-2 focus:ring-orange-500/20 focus:outline-none"></div></div>' +
+        '<div><label class="text-sm font-semibold text-orange-300">ประเภทเอกสาร</label><select class="w-full min-h-[48px] mt-1.5 px-3 py-3 bg-slate-950 border-2 border-orange-500/70 rounded-xl text-sm text-white focus:border-orange-400 focus:ring-2 focus:ring-orange-500/20 focus:outline-none" onchange="window.docTypeFilter=this.value; renderDocuments(document.getElementById(\'main-content\'))">' +
+          '<option value="">ทุกประเภทเอกสาร</option>' +
+          ['QT','INV','REC','WHT','PR','EXT'].map(function(t){ return '<option value="'+t+'" '+(selectedType===t?'selected':'')+'>'+docTypeLabel(t)+'</option>'; }).join('') +
+        '</select></div>' +
+      '</div><div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end border-t border-slate-800 pt-3">' +
+      '<div><label class="text-xs text-slate-400">ลูกค้า</label><select class="w-full min-h-[44px] mt-1 px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-sm text-white" onchange="window.docClientFilter=this.value; renderDocuments(document.getElementById(\'main-content\'))">' +
         '<option value="">ทุกลูกค้า</option>' + clients.map(function(c){ return '<option value="'+esc(c)+'" '+(selectedClient===c?'selected':'')+'>'+esc(c)+'</option>'; }).join('') + '</select></div>' +
-      '<div><label class="text-xs text-slate-400">เดือน</label><select class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" onchange="window.docMonthFilter=this.value; renderDocuments(document.getElementById(\'main-content\'))">' +
+      '<div><label class="text-xs text-slate-400">เดือน</label><select class="w-full min-h-[44px] mt-1 px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-sm text-white" onchange="window.docMonthFilter=this.value; renderDocuments(document.getElementById(\'main-content\'))">' +
         '<option value="">ทุกเดือน</option>' + months.map(function(m){ return '<option value="'+m+'" '+(selectedMonth===m?'selected':'')+'>'+monthLabel(m)+'</option>'; }).join('') + '</select></div>' +
-      '<div><label class="text-xs text-slate-400">วันที่</label><input type="date" value="'+selectedDay+'" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" onchange="window.docDayFilter=this.value; renderDocuments(document.getElementById(\'main-content\'))"></div>' +
-      '<div class="flex gap-2"><button type="button" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm" onclick="window.docClientFilter=\'\';window.docMonthFilter=\'\';window.docDayFilter=\'\';renderDocuments(document.getElementById(\'main-content\'))">ล้างตัวกรอง</button>' +
-      '<div class="text-xs text-slate-500 flex items-center">พบ ' + filteredGroups.reduce(function(s,g){ return s+g.docs.length; },0) + ' เอกสาร</div></div></div></div>' +
-    '<div class="space-y-3">' +
+      '<div><label class="text-xs text-slate-400">วันที่</label><input type="date" value="'+selectedDay+'" class="w-full min-h-[44px] mt-1 px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-sm text-white" onchange="window.docDayFilter=this.value; renderDocuments(document.getElementById(\'main-content\'))"></div>' +
+      '<div class="flex gap-2 items-center"><button type="button" class="min-h-[44px] px-4 py-2 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-white rounded-lg text-sm" onclick="window.docClientFilter=\'\';window.docMonthFilter=\'\';window.docDayFilter=\'\';window.docTypeFilter=\'\';window.docSearchQuery=\'\';renderDocuments(document.getElementById(\'main-content\'))">ล้างทั้งหมด</button>' +
+      '<div id="doc-result-count" class="text-xs text-slate-400 flex items-center">พบ ' + filteredGroups.reduce(function(s,g){ return s+g.docs.length; },0) + ' เอกสาร</div></div></div>' +
+      '<div class="mt-3 text-xs text-slate-500 flex items-center gap-1"><i data-lucide="arrow-down" class="w-3 h-3"></i> เรียงวันที่ล่าสุดก่อน</div></div>' +
+    '<div id="doc-groups-container" class="space-y-3">' +
     (projects.length===0 ? '<p class="text-slate-500 text-sm text-center py-8">ยังไม่มีโปรเจกต์</p>' :
       (filteredGroups.length===0 ? '<p class="text-slate-500 text-sm text-center py-8">ไม่พบเอกสารตามตัวกรองนี้</p>' :
       filteredGroups.map(function(group) {
         const p    = group.project;
         const docs = group.docs;
-        return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4">' +
+        const projectSearch = ((p.project_name||'')+' '+(p.client_name||'')).toLowerCase();
+        return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4" data-doc-group data-doc-total="'+docs.length+'" data-project-search="'+esc(projectSearch)+'">' +
           '<div class="flex items-center justify-between gap-3 mb-3">' +
             '<div><div class="text-sm font-semibold text-white">'+esc(p.project_name||'-')+'</div>' +
             '<div class="text-xs text-slate-500">ลูกค้า: '+esc(p.client_name||'-')+'</div></div>' +
             '<div class="flex items-center gap-2">' +
-              '<span class="text-xs text-slate-500">'+docs.length+' เอกสาร</span>' +
+              '<span class="text-xs text-slate-500" data-doc-group-count>'+docs.length+' เอกสาร</span>' +
               '<button class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs flex items-center gap-1" onclick="showUploadExtDoc(\''+p.project_id+'\')"><i data-lucide="upload" class="w-3 h-3"></i> อัปโหลดเอกสาร</button>' +
             '</div>' +
           '</div>' +
@@ -3045,7 +3243,8 @@ function renderDocuments(el) {
           (docs.length===0 ? '<p class="text-xs text-slate-500 py-2">ยังไม่มีเอกสาร</p>' :
             '<div class="space-y-1">' + docs.map(function(d) {
               const colorCls  = d.type==='QT'?'text-orange-400':d.type==='INV'?'text-amber-400':d.type==='REC'?'text-emerald-400':d.type==='PR'?'text-sky-400':d.type==='EXT'?'text-purple-400':'text-red-400';
-              const typeLabel = d.type==='QT'?'Quotation':d.type==='INV'?'Invoice':d.type==='REC'?'Receipt':d.type==='PR'?'Partner Receipt':d.type==='EXT'?'เอกสารภายนอก':'WHT';
+              const typeLabel = docTypeLabel(d.type);
+              const docSearch = ((d.num||'')+' '+docTypeSearchTerms(d.type)+' '+fmtDate(d.date)).toLowerCase();
               let btns = '';
               if (d.type==='WHT') {
                 btns = '<button type="button" class="text-xs text-orange-400 hover:text-orange-300" onclick="event.stopPropagation();previewWHT(\''+d.splitId+'\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button>' +
@@ -3060,15 +3259,17 @@ function renderDocuments(el) {
                 btns = '<button type="button" class="text-xs text-orange-400 hover:text-orange-300" onclick="event.stopPropagation();previewDoc(\''+p.project_id+'\',\''+d.type+'\',\''+d.num+'\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button>' +
                        '<button type="button" class="text-xs text-emerald-400 hover:text-emerald-300 ml-2" onclick="event.stopPropagation();printDoc(\''+p.project_id+'\',\''+d.type+'\',\''+d.num+'\')"><i data-lucide="printer" class="w-3 h-3 inline"></i> พิมพ์</button>';
               }
-              return '<div class="flex items-center gap-2 p-2 bg-slate-800/50 rounded-lg flex-wrap">' +
+              return '<div class="flex items-center gap-2 p-2.5 bg-slate-800/50 rounded-lg flex-wrap" data-doc-row data-doc-search="'+esc(docSearch)+'">' +
                 '<span class="text-[10px] px-2 py-0.5 rounded bg-slate-900 text-slate-400 flex-shrink-0">'+typeLabel+'</span>' +
                 '<span class="mono text-xs '+colorCls+' flex-shrink-0">'+esc(d.num||'-')+'</span>' +
                 '<span class="text-xs text-slate-500 flex-shrink-0">'+fmtDate(d.date)+'</span>' +
                 '<div class="flex-1"></div>' + btns + '</div>';
             }).join('') + '</div>') +
           '</div>';
-      }).join(''))) + '</div></div>';
+      }).join(''))) + '</div><p id="doc-search-empty" class="hidden text-slate-400 text-sm text-center py-10">ไม่พบเอกสารที่ค้นหา ลองเปลี่ยนคำค้นหรือประเภทเอกสาร</p></div>';
   if (window.lucide) lucide.createIcons();
+  const searchInput = document.getElementById('doc-search-input');
+  if (searchInput) _docSearchDocuments(searchInput);
 }
 
 // ── อัปโหลดเอกสารภายนอก ────────────────────────────────────────────────────
@@ -3543,6 +3744,7 @@ function showExpenseForm(projId) {
     '<div id="exp-doc-preview" class="mt-1"></div></div>' +
     '</form></div>';
   if (window.lucide) lucide.createIcons();
+  setTimeout(function () { dsrRestoreFormDrafts(); }, 0);
 }
 
 function previewExpenseDoc(input) {
@@ -3676,6 +3878,9 @@ function clearCompanyAsset(key, previewId) {
 }
 function renderSettings(el) {
   const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
+  const googleSyncUrl = window.dataSdk && window.dataSdk.getUrl ? window.dataSdk.getUrl() : '';
+  let googleSyncEnabled = false;
+  try { googleSyncEnabled = localStorage.getItem('DSR_google_sync_enabled') !== 'false' && !!googleSyncUrl; } catch (e) {}
   el.innerHTML = '<div class="p-6 fade-in"><h1 class="text-2xl font-bold text-white mb-1">ตั้งค่าระบบ</h1><p class="text-slate-400 text-sm mb-6">จัดการข้อมูลบริษัทและรูปเอกสาร</p>' +
     '<div class="max-w-3xl"><form id="settings-form" onsubmit="saveSettings(event)" class="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">' +
     '<h2 class="text-lg font-semibold text-white">ข้อมูลบริษัท</h2>' +
@@ -3695,22 +3900,248 @@ function renderSettings(el) {
       assetUploadBlock('company_payment_qr_data','set-company-payment-qr','preview-company-payment-qr','Payment QR Code') +
     '</div><p class="text-xs text-slate-500 mt-3">รูปจะไปแสดงบน Quotation, Invoice/Billing Note และ Receipt | Tax invoice และ QR payment จะขึ้นในเอกสารตรงตำแหน่งชำระเงิน</p></div>' +
     '<div class="pt-5 border-t border-slate-700">' +
-    '<div class="flex items-center gap-2 mb-3"><div class="w-7 h-7 rounded-lg bg-orange-600/20 border border-orange-500/30 flex items-center justify-center flex-shrink-0"><i data-lucide="share-2" class="w-3.5 h-3.5 text-orange-400"></i></div><h3 class="text-sm font-semibold text-white">การเชื่อมต่อ Google Sheets (แชร์ข้อมูลกับเพื่อน)</h3></div>' +
-    '<p class="text-xs text-slate-400 mb-3 leading-relaxed">วาง <b class=\'text-orange-300\'>Apps Script Web App URL</b> ด้านล่าง — ทุกคนที่ใช้ URL เดียวกันจะเห็นข้อมูลชุดเดียวกันแบบ real-time</p>' +
-    '<div class="flex gap-2 mb-2"><input id="set-script-url" type="url" placeholder="https://script.google.com/macros/s/.../exec" ' +
-    'class="flex-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-xs font-mono focus:border-orange-500 focus:outline-none" ' +
-    'value="' + (window.dsrGetUrl ? (window.dsrGetUrl() === '' ? '' : window.dsrGetUrl()) : '') + '">' +
-    '<button type="button" onclick="var u=document.getElementById(\'set-script-url\').value.trim();if(!u){showToast(\'กรุณาวาง URL ก่อน\',\'error\');return;}window.dsrSetUrl(u);showToast(\'เชื่อมต่อแล้ว — กำลังโหลดข้อมูล...\');" class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs font-semibold whitespace-nowrap">เชื่อมต่อ</button>' +
-    '<button type="button" onclick="if(window.dsrRefresh)window.dsrRefresh();showToast(\'รีเฟรชแล้ว\');" class="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs" title="รีเฟรชข้อมูล"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i></button></div>' +
-    '<p class="text-xs text-slate-500">URL นี้เก็บในเบราว์เซอร์ของแต่ละคน — แชร์ URL เดียวกันให้ทุกคนในทีมวางที่นี่</p></div>' +
+    '<div class="flex items-center gap-2 mb-3"><div class="w-7 h-7 rounded-lg bg-sky-600/20 border border-sky-500/30 flex items-center justify-center flex-shrink-0"><i data-lucide="cloud-cog" class="w-3.5 h-3.5 text-sky-400"></i></div><h3 class="text-sm font-semibold text-white">Google Sync — ใช้ร่วมกันบนคอมและโทรศัพท์</h3></div>' +
+    '<p class="text-xs text-slate-400 mb-3 leading-relaxed">ระบบบันทึกลงเครื่องก่อนทันที แล้วค่อยส่งคิวไป Google Apps Script เบื้องหลัง จึงกดใช้งานต่อได้โดยไม่ต้องรอ Google Sheet และเมื่อเน็ตหลุดรายการจะรอซิงก์ไว้</p>' +
+    '<label class="text-xs text-slate-400 block mb-1.5">Apps Script Web App URL</label>' +
+    '<input id="dsr-google-url" type="url" inputmode="url" spellcheck="false" placeholder="https://script.google.com/macros/s/.../exec" value="' + esc(googleSyncUrl) + '" class="w-full px-3 py-2.5 bg-slate-950 border border-slate-700 rounded-lg text-xs text-white mono focus:border-sky-500 focus:outline-none">' +
+    '<label class="mt-3 flex items-center gap-2 text-xs text-slate-300 cursor-pointer"><input id="dsr-google-enabled" type="checkbox" class="accent-sky-500" ' + (googleSyncEnabled ? 'checked' : '') + '><span>เปิดซิงก์ Google อัตโนมัติ</span></label>' +
+    '<div id="dsr-google-sync-info" class="my-3 px-3 py-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-400">กำลังตรวจสอบสถานะ Google Sync…</div>' +
+    '<div class="grid sm:grid-cols-3 gap-2"><button type="button" onclick="dsrSaveGoogleSync()" class="px-3 py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="save" class="w-4 h-4"></i>บันทึกการเชื่อมต่อ</button><button type="button" onclick="dsrTestGoogleSync()" class="px-3 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="plug-zap" class="w-4 h-4"></i>ทดสอบ Google</button><button type="button" onclick="dsrSyncGoogleNow()" class="px-3 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="refresh-cw" class="w-4 h-4"></i>ส่งคิวตอนนี้</button></div>' +
+    '<p class="text-[11px] text-slate-500 mt-2">ใช้ URL เดียวกันทุกเครื่องและต้องลงท้ายด้วย /exec · ถ้า URL เดิมเสีย สามารถเปลี่ยนได้โดยคิวในเครื่องจะยังอยู่ครบ</p></div>' +
+    '<div class="pt-5 border-t border-slate-700">' +
+    '<div class="flex items-center gap-2 mb-3"><div class="w-7 h-7 rounded-lg bg-emerald-600/20 border border-emerald-500/30 flex items-center justify-center flex-shrink-0"><i data-lucide="folder-cog" class="w-3.5 h-3.5 text-emerald-400"></i></div><h3 class="text-sm font-semibold text-white">ตำแหน่งเก็บข้อมูลในเครื่อง</h3></div>' +
+    '<p class="text-xs text-slate-400 mb-3 leading-relaxed">เลือกโฟลเดอร์ที่ต้องการ เช่น Documents\\DSR Data ระบบจะบันทึกข้อมูลทั้งหมดลงไฟล์ <span class="mono text-emerald-400">DSR_LIVE_DATA.json</span> อัตโนมัติทุกครั้งที่มีการแก้ไข โดยยังมีฐานข้อมูลสำรองภายในโปรแกรมเพื่อป้องกันข้อมูลสูญหาย</p>' +
+    '<div id="dsr-storage-info" class="mb-3 px-3 py-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-400">กำลังตรวจสอบพื้นที่จัดเก็บ…</div>' +
+    '<div class="grid sm:grid-cols-2 gap-2 mb-2">' +
+      '<button type="button" onclick="dsrChooseStorageFolder()" class="px-3 py-2.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="folder-open" class="w-4 h-4"></i>เลือก / เปลี่ยนโฟลเดอร์</button>' +
+      '<button type="button" onclick="dsrReconnectStorageFolder()" class="px-3 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="folder-check" class="w-4 h-4"></i>อนุญาตโฟลเดอร์อีกครั้ง</button>' +
+      '<button type="button" onclick="dsrSaveFolderSnapshot()" class="px-3 py-2.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="save" class="w-4 h-4"></i>Backup ลงโฟลเดอร์</button>' +
+    '</div>' +
+    '<div class="grid sm:grid-cols-2 gap-2">' +
+      '<button type="button" onclick="dsrDownloadBackup()" class="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="download" class="w-4 h-4"></i>ดาวน์โหลด Backup</button>' +
+      '<label class="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"><i data-lucide="upload" class="w-4 h-4"></i>กู้คืนจากไฟล์<input type="file" accept=".json,application/json" class="hidden" onchange="dsrImportBackupFile(this)"></label>' +
+      '<button type="button" onclick="dsrRestoreFromStorageFolder()" class="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="history" class="w-4 h-4"></i>กู้จากโฟลเดอร์ที่เลือก</button>' +
+    '</div>' +
+    '<div class="mt-3 flex items-start justify-between gap-3"><p class="text-[11px] text-amber-400">ไฟล์หลักจะอัปเดตอัตโนมัติ ส่วนปุ่ม Backup ลงโฟลเดอร์จะสร้างไฟล์ย้อนหลังแยกไว้ในโฟลเดอร์ DSR_Backups</p><button type="button" onclick="dsrDisconnectStorageFolder()" class="text-[11px] text-red-400 hover:text-red-300 whitespace-nowrap">ยกเลิกโฟลเดอร์</button></div></div>' +
     '<div class="pt-4 border-t border-slate-700 flex gap-3 justify-end"><button type="button" class="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm" onclick="navigate(\'dashboard\')">ยกเลิก</button><button type="submit" class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm flex items-center gap-2" id="set-submit"><i data-lucide="save" class="w-4 h-4"></i> บันทึก</button></div>' +
     '</form></div></div>';
   if (window.lucide) lucide.createIcons();
+  dsrUpdateGoogleSyncInfo();
+  dsrUpdateStorageInfo();
+}
+
+async function dsrUpdateGoogleSyncInfo() {
+  var el = document.getElementById('dsr-google-sync-info');
+  if (!el || !window.dataSdk || !window.dataSdk.getSyncInfo) return;
+  try {
+    var info = await window.dataSdk.getSyncInfo();
+    if (!document.getElementById('dsr-google-sync-info')) return;
+    if (!info.configured) {
+      el.innerHTML = '<div class="text-amber-400 font-semibold mb-1">ยังไม่ได้เชื่อม Google</div><div>วาง Apps Script Web App URL แล้วกด “บันทึกการเชื่อมต่อ”</div>';
+      return;
+    }
+    if (!info.enabled) {
+      el.innerHTML = '<div class="text-slate-300 font-semibold mb-1">Google Sync ปิดอยู่</div><div>ข้อมูลยังบันทึกในเครื่องตามปกติ · คิวเดิมยังถูกเก็บไว้</div>';
+      return;
+    }
+    var last = info.lastSyncAt ? new Date(info.lastSyncAt).toLocaleString('th-TH') : 'ยังไม่เคยซิงก์';
+    var headline = info.active ? 'กำลังซิงก์ Google…' : info.uncertain ? 'ต้องตรวจสอบรายการใหม่ก่อนส่งซ้ำ' : info.error ? esc(info.error) : info.pending ? 'รอซิงก์ ' + info.pending + ' รายการ' : '● Google Sync พร้อมใช้งาน';
+    var color = info.uncertain || info.error || !info.online ? 'text-amber-400' : info.active ? 'text-sky-400' : 'text-emerald-400';
+    var help = '';
+    if (info.errorCode === 'proxy-failed') help = 'ปิดโปรแกรมแล้วเปิดจากไอคอน DSR+ Offline ใหม่ หากยังไม่หายให้ติดตั้งเวอร์ชันล่าสุดทับ';
+    else if (info.errorCode === 'proxy-invalid-target' || info.errorCode === 'http-404') help = 'ตรวจ URL ให้เป็น Web App URL ที่ลงท้ายด้วย /exec';
+    else if (info.errorCode === 'google-login-required' || info.errorCode === 'http-401' || info.errorCode === 'http-403') help = 'Deploy Apps Script ใหม่ โดยตั้ง Who has access เป็น Anyone แล้วนำ URL /exec มาใส่';
+    else if (info.errorCode === 'invalid-json' || info.errorCode === 'invalid-records') help = 'URL นี้ไม่ตอบเป็น DSR API กรุณาตรวจ Deployment ของ Apps Script';
+    else if (info.error) help = 'ข้อมูลยังอยู่ในเครื่อง กด “ทดสอบ Google” เพื่อเช็กอีกครั้ง';
+    var detail = info.errorDetail ? '<div class="mt-1 text-slate-500 break-words">รายละเอียด: ' + esc(info.errorDetail) + '</div>' : '';
+    var route = info.transport === 'local-proxy' ? ' · ผ่านตัวส่ง DSR บนเครื่อง' : '';
+    el.innerHTML = '<div class="' + color + ' font-semibold mb-1">' + headline + '</div><div>คิว ' + info.pending + ' รายการ · ล่าสุด ' + last + (info.online ? '' : ' · ขณะนี้ Offline') + route + '</div>' + detail + (help ? '<div class="mt-2 text-amber-300">วิธีแก้: ' + help + '</div>' : '');
+  } catch (error) {
+    el.textContent = 'ไม่สามารถอ่านสถานะ Google Sync ได้';
+  }
+}
+
+async function dsrSaveGoogleSync() {
+  var input = document.getElementById('dsr-google-url');
+  var checkbox = document.getElementById('dsr-google-enabled');
+  if (!input || !checkbox || !window.dataSdk) return;
+  var value = String(input.value || '').trim();
+  if (checkbox.checked && !/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec(?:[?#].*)?$/i.test(value)) {
+    showToast('URL ต้องเป็น Apps Script Web App และลงท้ายด้วย /exec', 'error');
+    return;
+  }
+  var saved = await window.dataSdk.setUrl(value);
+  if (!saved || !saved.isOk) { showToast('บันทึก URL ไม่สำเร็จ', 'error'); return; }
+  await window.dataSdk.setSyncEnabled(checkbox.checked);
+  showToast(checkbox.checked ? (saved.changedWithPending ? 'เปลี่ยน URL แล้ว · กำลังส่งคิวเดิมไป Google' : 'บันทึกแล้ว · ระบบกำลังซิงก์เบื้องหลัง') : 'บันทึกแล้ว · ปิด Google Sync');
+  dsrUpdateGoogleSyncInfo();
+}
+
+async function dsrTestGoogleSync() {
+  if (!window.dataSdk || !window.dataSdk.testConnection) return;
+  var info = await window.dataSdk.getSyncInfo();
+  if (!info.configured || !info.enabled) {
+    showToast('กรุณาบันทึก URL /exec และเปิด Google Sync ก่อน', 'error');
+    return;
+  }
+  showToast('กำลังทดสอบ Google…');
+  var result = await window.dataSdk.testConnection();
+  if (result && result.isOk) showToast('เชื่อม Google สำเร็จ · พบข้อมูล ' + result.count + ' รายการ');
+  else showToast('ยังเชื่อม Google ไม่ได้ · ดูวิธีแก้ในกรอบสถานะ', 'error');
+  dsrUpdateGoogleSyncInfo();
+}
+
+async function dsrRetryGoogleSync() {
+  if (!window.dataSdk || !window.dataSdk.retryUpdates) return;
+  var retry = document.getElementById('dsr-retry-save');
+  if (retry) retry.disabled = true;
+  showToast('กำลังส่งข้อมูลไป Google อีกครั้ง…');
+  try {
+    var result = await window.dataSdk.retryUpdates();
+    if (result && result.isOk) showToast('ส่งข้อมูลไป Google สำเร็จ');
+    else showToast('ยังส่ง Google ไม่ได้ · ข้อมูลในเครื่องยังอยู่ครบ', 'error');
+  } finally {
+    if (retry) retry.disabled = false;
+    dsrUpdateGoogleSyncInfo();
+  }
+}
+
+async function dsrSyncGoogleNow() {
+  if (!window.dataSdk || !window.dataSdk.syncNow) return;
+  var info = await window.dataSdk.getSyncInfo();
+  if (!info.configured || !info.enabled) {
+    showToast('กรุณาใส่ URL และเปิด Google Sync ก่อน', 'error');
+    return;
+  }
+  var result = await window.dataSdk.syncNow();
+  if (result && result.isOk) showToast('Google Sync สำเร็จ');
+  else showToast('ยังซิงก์ไม่ได้ · ข้อมูลและคิวยังอยู่ในเครื่อง', 'error');
+  dsrUpdateGoogleSyncInfo();
+}
+
+function dsrFormatBytes(bytes) {
+  bytes = Number(bytes) || 0;
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+async function dsrUpdateStorageInfo() {
+  var el = document.getElementById('dsr-storage-info');
+  if (!el || !window.dataSdk || !window.dataSdk.storageInfo) return;
+  try {
+    var info = await window.dataSdk.storageInfo();
+    if (!document.getElementById('dsr-storage-info')) return;
+    var quotaText = info.quota ? ' · ใช้พื้นที่ ' + dsrFormatBytes(info.usage) + ' จาก ' + dsrFormatBytes(info.quota) : '';
+    var folder = info.folder || {};
+    var folderHtml = '';
+    if (!folder.supported) {
+      folderHtml = '<div class="text-amber-400 font-semibold mb-1">เบราว์เซอร์นี้ยังเลือกโฟลเดอร์ไม่ได้</div><div>กรุณาเปิด DSR ด้วย Microsoft Edge หรือ Google Chrome เวอร์ชันล่าสุด</div>';
+    } else if (!folder.configured) {
+      folderHtml = '<div class="text-amber-400 font-semibold mb-1">ยังไม่ได้เลือกโฟลเดอร์จัดเก็บ</div><div>กด “เลือก / เปลี่ยนโฟลเดอร์” แล้วเลือกตำแหน่งที่ต้องการเก็บข้อมูล</div>';
+    } else if (folder.permission === 'granted') {
+      var savedText = folder.lastSavedAt ? ' · บันทึกล่าสุด ' + new Date(folder.lastSavedAt).toLocaleString('th-TH') : '';
+      folderHtml = '<div class="text-emerald-400 font-semibold mb-1">● บันทึกอัตโนมัติอยู่</div><div class="text-slate-200">' + esc(folder.name || 'โฟลเดอร์ที่เลือก') + '\\' + esc(folder.fileName || 'DSR_LIVE_DATA.json') + '</div><div class="text-slate-500 mt-1">ทุกการแก้ไขจะถูกเขียนลงไฟล์นี้' + savedText + '</div>';
+    } else {
+      folderHtml = '<div class="text-amber-400 font-semibold mb-1">เลือกโฟลเดอร์แล้ว แต่ต้องอนุญาตการเข้าถึงอีกครั้ง</div><div>' + esc(folder.name || 'โฟลเดอร์ที่เลือก') + ' · กดปุ่ม “อนุญาตโฟลเดอร์อีกครั้ง”</div>';
+    }
+    el.innerHTML = folderHtml + '<div class="border-t border-slate-800 mt-3 pt-2 text-slate-500">ฐานข้อมูลภายใน ' + info.count + ' รายการ' + quotaText + (info.persisted ? ' · ป้องกันการล้างอัตโนมัติแล้ว' : '') + '</div>';
+  } catch (error) {
+    el.textContent = 'ไม่สามารถอ่านข้อมูลพื้นที่จัดเก็บได้';
+  }
+}
+
+async function dsrChooseStorageFolder() {
+  if (!window.dataSdk || !window.dataSdk.chooseStorageFolder) return;
+  var result = await window.dataSdk.chooseStorageFolder();
+  if (result && result.cancelled) return;
+  if (!result || !result.isOk) {
+    showToast((result && result.error) || 'เลือกโฟลเดอร์ไม่สำเร็จ', 'error');
+  } else {
+    showToast('ตั้งค่าโฟลเดอร์แล้ว · บันทึกข้อมูล ' + result.count + ' รายการ');
+  }
+  dsrUpdateStorageInfo();
+}
+
+async function dsrReconnectStorageFolder() {
+  if (!window.dataSdk || !window.dataSdk.reconnectStorageFolder) return;
+  var result = await window.dataSdk.reconnectStorageFolder();
+  if (!result || !result.isOk) {
+    showToast((result && result.error) || 'เชื่อมต่อโฟลเดอร์ไม่สำเร็จ', 'error');
+  } else {
+    showToast('เชื่อมต่อและบันทึกลงโฟลเดอร์แล้ว');
+  }
+  dsrUpdateStorageInfo();
+}
+
+async function dsrSaveFolderSnapshot() {
+  if (!window.dataSdk || !window.dataSdk.saveFolderSnapshot) return;
+  var result = await window.dataSdk.saveFolderSnapshot();
+  if (!result || !result.isOk) {
+    showToast((result && result.error) || 'สร้าง Backup ไม่สำเร็จ', 'error');
+  } else {
+    showToast('สร้าง ' + result.fileName + ' แล้ว · ' + result.count + ' รายการ');
+  }
+  dsrUpdateStorageInfo();
+}
+
+function dsrRestoreFromStorageFolder() {
+  if (!window.dataSdk || !window.dataSdk.restoreFromStorageFolder) return;
+  showConfirm('กู้ข้อมูลจาก DSR_LIVE_DATA.json ในโฟลเดอร์ที่เลือก?\n\nข้อมูลปัจจุบันในโปรแกรมจะถูกเขียนทับทั้งหมด', async function () {
+    var result = await window.dataSdk.restoreFromStorageFolder();
+    if (!result || !result.isOk) {
+      showToast((result && result.error) || 'กู้ข้อมูลจากโฟลเดอร์ไม่สำเร็จ', 'error');
+      return;
+    }
+    showToast('กู้ข้อมูลสำเร็จ · ' + result.count + ' รายการ');
+    setTimeout(function () { location.reload(); }, 500);
+  });
+}
+
+function dsrDisconnectStorageFolder() {
+  if (!window.dataSdk || !window.dataSdk.disconnectStorageFolder) return;
+  showConfirm('ยกเลิกการบันทึกอัตโนมัติลงโฟลเดอร์นี้?\n\nข้อมูลเดิมในโฟลเดอร์จะไม่ถูกลบ และข้อมูลในโปรแกรมยังคงอยู่', async function () {
+    var result = await window.dataSdk.disconnectStorageFolder();
+    if (!result || !result.isOk) {
+      showToast((result && result.error) || 'ยกเลิกโฟลเดอร์ไม่สำเร็จ', 'error');
+      return;
+    }
+    showToast('ยกเลิกโฟลเดอร์แล้ว ข้อมูลเดิมยังอยู่ครบ');
+    dsrUpdateStorageInfo();
+  });
+}
+
+async function dsrDownloadBackup() {
+  if (!window.dataSdk || !window.dataSdk.downloadBackup) return;
+  try {
+    var result = await window.dataSdk.downloadBackup();
+    if (!result || !result.isOk) throw new Error('backup-failed');
+    showToast('ดาวน์โหลด Backup แล้ว · ' + result.count + ' รายการ');
+  } catch (error) {
+    showToast('สร้างไฟล์ Backup ไม่สำเร็จ', 'error');
+  }
+}
+
+function dsrImportBackupFile(input) {
+  var file = input && input.files ? input.files[0] : null;
+  if (!file) return;
+  input.value = '';
+  showConfirm('กู้คืน Backup นี้?\n\nข้อมูลในเครื่องปัจจุบันจะถูกเขียนทับทั้งหมด ควรดาวน์โหลด Backup ชุดปัจจุบันเก็บไว้ก่อน', async function () {
+    var result = await window.dataSdk.importBackup(file);
+    if (!result || !result.isOk) {
+      showToast((result && result.error) || 'กู้คืน Backup ไม่สำเร็จ', 'error');
+      return;
+    }
+    showToast('กู้คืนสำเร็จ · ' + result.count + ' รายการ');
+    setTimeout(function () { location.reload(); }, 500);
+  });
 }
 
 async function saveSettings(e) {
   e.preventDefault();
   const btn = document.getElementById('set-submit');
+  const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
   btn.disabled = true; btn.textContent = 'กำลังบันทึก...';
   try {
     const logoData = await readImageAsDataURL('set-company-logo', 'preview-company-logo');
@@ -3732,16 +4163,14 @@ async function saveSettings(e) {
       company_stamp_data: stampData === null ? getAssetValue('company_stamp_data') : stampData,
       company_payment_qr_data: paymentQrData === null ? getAssetValue('company_payment_qr_data') : paymentQrData
     };
-    localStorage.setItem('DSR_company_logo_data', nextConfig.company_logo_data || '');
-    localStorage.setItem('DSR_company_signature_data', nextConfig.company_signature_data || '');
-    localStorage.setItem('DSR_company_stamp_data', nextConfig.company_stamp_data || '');
-    localStorage.setItem('DSR_company_payment_qr_data', nextConfig.company_payment_qr_data || '');
-    await window.elementSdk.setConfig(nextConfig);
+    const result = await window.elementSdk.setConfig(nextConfig);
+    if (!result || !result.isOk) throw new Error((result && result.error) || 'บันทึกไม่สำเร็จ');
+    dsrClearFormDraft(e.currentTarget);
     showToast('บันทึกการตั้งค่าสำเร็จ');
     setTimeout(function() { navigate('dashboard'); }, 1000);
   } catch(err) {
     console.error(err);
-    showToast('เกิดข้อผิดพลาด', 'error');
+    showToast((err && err.message) || 'เกิดข้อผิดพลาด', 'error');
     btn.disabled = false; btn.textContent = 'บันทึก';
   }
 }
@@ -4199,42 +4628,283 @@ window.elementSdk.init({
   }
 });
 
-let _renderPending = false;
+let _dsrEditVersion = 0;
+let _dsrDirty = false;
+let _dsrFormDraftTimers = new Map();
+let _dsrLiveSaveTimers = {};
+let _dsrDraftSavedUntil = 0;
+let _dsrLastSyncState = {};
+let _dsrManualPending = new Set();
+try {
+  JSON.parse(localStorage.getItem('DSR_manual_pending') || '[]').forEach(function (id) { if (id) _dsrManualPending.add(id); });
+} catch (ignore) {}
 
-function isUserTyping() {
-  const active = document.activeElement;
-  if (!active) return false;
-  const tag = active.tagName;
-  if (tag === 'TEXTAREA') return true;
-  if (tag === 'SELECT') return true;
-  if (tag === 'INPUT') {
-    // Allow re-render for checkboxes/radios but block text/number inputs
-    const t = active.type || 'text';
-    if (t === 'checkbox' || t === 'radio' || t === 'range') return false;
-    return true;
-  }
-  return false;
+function dsrPersistManualPending() {
+  try { localStorage.setItem('DSR_manual_pending', JSON.stringify(Array.from(_dsrManualPending))); } catch (ignore) {}
 }
 
-function safeRenderPage() {
-  var active = document.activeElement;
-  var tag = active ? active.tagName : '';
-  var isTyping = (tag === 'INPUT' || tag === 'TEXTAREA') && active.value;
-  if (isTyping) { _renderPending = true; return; }
-  _renderPending = false;
-  renderPage();
+function dsrMarkManualPending(id) {
+  if (!id) return;
+  _dsrManualPending.add(id);
+  dsrPersistManualPending();
+  dsrShowSyncStatus(_dsrLastSyncState || {});
 }
 
-document.addEventListener('focusout', function() {
-  if (_renderPending) {
-    setTimeout(function() {
-      if (!isUserTyping()) {
-        _renderPending = false;
-        renderPage();
+function dsrClearManualPending(id) {
+  if (!id) return;
+  _dsrManualPending.delete(id);
+  dsrPersistManualPending();
+  dsrShowSyncStatus(_dsrLastSyncState || {});
+}
+
+function dsrFormDraftKey(form, index) {
+  var route = String(currentPage || 'page') + ':' + String(window._navCtx || '');
+  var signature = form.dataset.dsrDraftGroup || form.id || form.getAttribute('onsubmit') || ('form-' + index);
+  return 'DSR_form_draft:' + encodeURIComponent(route + ':' + signature);
+}
+
+function dsrDraftFields(form) {
+  return Array.from(form.querySelectorAll('input,select,textarea')).filter(function (field) {
+    var type = String(field.type || '').toLowerCase();
+    return ['file','submit','button','reset','image','password','search'].indexOf(type) < 0 &&
+      !(field.dataset && field.dataset.qid) && !field.hasAttribute('data-no-draft');
+  });
+}
+
+function dsrSaveFormDraft(form) {
+  if (!form || !form.isConnected) return;
+  var forms = Array.from(document.querySelectorAll('#main-content form, #main-content [data-dsr-draft-group]'));
+  var index = Math.max(0, forms.indexOf(form));
+  var fields = {};
+  dsrDraftFields(form).forEach(function (field, fieldIndex) {
+    var key = field.id || field.name || ('field-' + fieldIndex);
+    fields[key] = { value: field.value, checked: !!field.checked, type: field.type || field.tagName };
+  });
+  try {
+    localStorage.setItem(dsrFormDraftKey(form, index), JSON.stringify({ savedAt: Date.now(), fields: fields }));
+  } catch (ignore) {}
+}
+
+function dsrScheduleFormDraft(form) {
+  var oldTimer = _dsrFormDraftTimers.get(form);
+  if (oldTimer) clearTimeout(oldTimer);
+  _dsrDirty = true;
+  var timer = setTimeout(function () {
+    dsrSaveFormDraft(form);
+    _dsrFormDraftTimers.delete(form);
+    _dsrDirty = false;
+    _dsrDraftSavedUntil = Date.now() + 1400;
+    dsrShowSyncStatus(_dsrLastSyncState || {});
+    setTimeout(function () { dsrShowSyncStatus(_dsrLastSyncState || {}); }, 1500);
+  }, 300);
+  _dsrFormDraftTimers.set(form, timer);
+  dsrShowSyncStatus(_dsrLastSyncState || {});
+}
+
+function dsrRestoreFormDrafts() {
+  var forms = Array.from(document.querySelectorAll('#main-content form, #main-content [data-dsr-draft-group]'));
+  forms.forEach(function (form, index) {
+    if (form.dataset.dsrDraftRestored === 'true') return;
+    form.dataset.dsrDraftRestored = 'true';
+    var raw = null;
+    try { raw = localStorage.getItem(dsrFormDraftKey(form, index)); } catch (ignore) {}
+    if (!raw) return;
+    try {
+      var draft = JSON.parse(raw);
+      if (!draft || !draft.savedAt || Date.now() - draft.savedAt > 7 * 24 * 60 * 60 * 1000) {
+        localStorage.removeItem(dsrFormDraftKey(form, index));
+        return;
       }
-    }, 150);
+      dsrDraftFields(form).forEach(function (field, fieldIndex) {
+        var key = field.id || field.name || ('field-' + fieldIndex);
+        var saved = draft.fields && draft.fields[key];
+        if (!saved) return;
+        if (String(field.type).toLowerCase() === 'checkbox' || String(field.type).toLowerCase() === 'radio') field.checked = !!saved.checked;
+        else field.value = saved.value == null ? '' : saved.value;
+      });
+    } catch (ignore) {}
+  });
+}
+
+function dsrClearFormDraft(form) {
+  if (!form) return;
+  var timer = _dsrFormDraftTimers.get(form);
+  if (timer) clearTimeout(timer);
+  _dsrFormDraftTimers.delete(form);
+  var forms = Array.from(document.querySelectorAll('#main-content form, #main-content [data-dsr-draft-group]'));
+  var index = Math.max(0, forms.indexOf(form));
+  try { localStorage.removeItem(dsrFormDraftKey(form, index)); } catch (ignore) {}
+}
+
+document.addEventListener('submit', function (event) {
+  var form = event.target;
+  if (!form || form.tagName !== 'FORM') return;
+  var forms = Array.from(document.querySelectorAll('#main-content form, #main-content [data-dsr-draft-group]'));
+  var draftKey = dsrFormDraftKey(form, Math.max(0, forms.indexOf(form)));
+  setTimeout(function () {
+    if (!form.isConnected) {
+      try { localStorage.removeItem(draftKey); } catch (ignore) {}
+    }
+  }, 1800);
+}, true);
+
+function dsrCancelLiveAutosave(key) {
+  var entry = _dsrLiveSaveTimers[key];
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  delete _dsrLiveSaveTimers[key];
+}
+
+function dsrScheduleLiveRecordSave(key, record) {
+  dsrCancelLiveAutosave(key);
+  var snapshot = JSON.parse(JSON.stringify(record));
+  dsrMarkManualPending(snapshot.__backendId || key);
+  var timer = setTimeout(async function () {
+    delete _dsrLiveSaveTimers[key];
+    var writer = window.dataSdk.updateLocal || window.dataSdk.update;
+    var result = await writer.call(window.dataSdk, snapshot);
+    if (result && result.isOk) {
+      _dsrDraftSavedUntil = Date.now() + 1400;
+      dsrShowSyncStatus(_dsrLastSyncState || {});
+      setTimeout(function () { dsrShowSyncStatus(_dsrLastSyncState || {}); }, 1500);
+    }
+  }, 350);
+  _dsrLiveSaveTimers[key] = { timer: timer, record: snapshot };
+  dsrShowSyncStatus(_dsrLastSyncState || {});
+}
+
+function dsrQueueProfileAutosave(id) {
+  var record = allData.find(function (item) { return item.__backendId === id; });
+  if (!record || !document.getElementById('pf-name')) return;
+  var next = Object.assign({}, record, {
+    role: document.getElementById('pf-role').value,
+    entity_type: document.getElementById('pf-entity').value,
+    name: document.getElementById('pf-name').value,
+    tax_id: document.getElementById('pf-tax').value,
+    default_wht: parseFloat(document.getElementById('pf-wht').value || 0),
+    vat_enabled: document.getElementById('pf-vat-enabled').value === 'true',
+    vat_rate: parseFloat(document.getElementById('pf-vat-rate').value || 7),
+    address: document.getElementById('pf-addr').value,
+    email: document.getElementById('pf-email').value,
+    phone: document.getElementById('pf-phone').value
+  });
+  Object.assign(record, next);
+  dsrScheduleLiveRecordSave('profile:' + id, next);
+}
+
+function dsrQueueProjectProgress(projId) {
+  var project = allData.find(function (item) { return item.record_type === 'project' && item.project_id === projId; });
+  var progressEl = document.getElementById('project-progress-input');
+  var statusEl = document.getElementById('project-progress-status');
+  var noteEl = document.getElementById('project-progress-note');
+  if (!project || !progressEl || !statusEl || !noteEl) return;
+  var next = Object.assign({}, project, {
+    project_progress: Number(progressEl.value) || 0,
+    progress_status: statusEl.value,
+    progress_note: noteEl.value,
+    progress_updated_at: new Date().toISOString()
+  });
+  Object.assign(project, next);
+  dsrScheduleLiveRecordSave('progress:' + projId, next);
+}
+
+function dsrHasPendingDraft() {
+  return _dsrDirty || _dsrManualPending.size > 0 || _dsrFormDraftTimers.size > 0 || Object.keys(_dsrLiveSaveTimers).length > 0 ||
+    (typeof _qt !== 'undefined' && Object.values(_qt).some(function (st) { return !!st.debounce; }));
+}
+function dsrMarkEdited(event) {
+  if (event.target.closest && event.target.closest('#main-content, #confirm-dialog, #boq-item-editor-modal')) {
+    _dsrEditVersion++;
+    // Quotation rows autosave; searching never changes saved data.
+    var target = event.target;
+    if ((target.dataset && target.dataset.qid) || /Search\(/.test(target.getAttribute('oninput') || '')) return;
+    if (target.closest('[data-dsr-live-save]')) return;
+    var form = target.closest('form,[data-dsr-draft-group]');
+    if (form) {
+      dsrScheduleFormDraft(form);
+      return;
+    }
+    _dsrDirty = true;
+  }
+}
+document.addEventListener('input', dsrMarkEdited, true);
+document.addEventListener('change', dsrMarkEdited, true);
+window.addEventListener('beforeunload', function (event) {
+  if (dsrHasPendingDraft() || window.dataSdk.isBusy()) {
+    event.preventDefault();
+    event.returnValue = '';
   }
 });
+function dsrRenderActionWhenIdle() {
+  var page = currentPage, context = window._navCtx, version = _dsrEditVersion;
+  setTimeout(function () {
+    var active = document.activeElement;
+    if (page !== currentPage || context !== window._navCtx || version !== _dsrEditVersion ||
+        dsrHasPendingDraft() || window.dataSdk.isBusy() ||
+        (active && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) ||
+        document.querySelector('#main-content form')) return;
+    var main = document.getElementById('main-content'), scroll = main.scrollTop;
+    renderPage();
+    main.scrollTop = scroll;
+  }, 0);
+}
+function safeRenderPage() {
+  // Called only for initial data or a user-requested refresh, never on a timer.
+  if (dsrHasPendingDraft()) return;
+  renderPage();
+}
+function dsrShowSyncStatus(state) {
+  _dsrLastSyncState = state || {};
+  var label = document.getElementById('dsr-save-status');
+  var retry = document.getElementById('dsr-retry-save');
+  var refresh = document.getElementById('dsr-refresh-button');
+  var dot = document.getElementById('sync-dot');
+  if (!label) return;
+  var draftSaving = _dsrFormDraftTimers.size > 0 || Object.keys(_dsrLiveSaveTimers).length > 0 ||
+    (typeof _qt !== 'undefined' && Object.values(_qt).some(function (st) { return !!st.debounce; }));
+  label.textContent = draftSaving ? 'กำลังบันทึกข้อความในเครื่อง…' :
+    Date.now() < _dsrDraftSavedUntil ? 'บันทึกข้อความในเครื่องแล้ว' :
+    _dsrManualPending.size ? 'แก้ไขในเครื่องแล้ว · กด Save เพื่อส่ง Google (' + _dsrManualPending.size + ')' :
+    state.pending || state.folderSaving ? 'กำลังบันทึกลงเครื่อง…' + (state.pending ? ' (' + state.pending + ')' : '') :
+    state.failed ? 'บันทึกในเครื่องไม่สำเร็จ' :
+    state.reading ? 'กำลังโหลดข้อมูลจากเครื่อง…' :
+    state.error ? 'เปิดฐานข้อมูลในเครื่องไม่ได้' :
+    state.syncActive ? 'บันทึกในเครื่องแล้ว · กำลังซิงก์ Google…' :
+    state.syncUncertain ? 'บันทึกในเครื่องแล้ว · ต้องตรวจคิว Google (' + state.syncPending + ')' :
+    state.syncError ? 'บันทึกในเครื่องแล้ว · ' + (state.syncErrorMessage || 'รอซิงก์ Google') :
+    state.syncEnabled && state.syncConfigured && state.syncPending ? 'บันทึกในเครื่องแล้ว · รอซิงก์ Google ' + state.syncPending :
+    state.syncEnabled && state.syncConfigured ? 'บันทึกในเครื่องแล้ว · Google Sync พร้อม' :
+    state.folderError || (state.folderConfigured && state.folderPermission !== 'granted') ? 'บันทึกฐานข้อมูลแล้ว · โฟลเดอร์รออนุญาต' :
+    state.folderConfigured ? 'OFFLINE · บันทึกที่ ' + state.folderName : 'OFFLINE · บันทึกในเครื่องแล้ว';
+  label.style.color = _dsrManualPending.size ? '#fb923c' : (state.failed || state.error || state.syncError || state.syncUncertain || state.folderError || (state.folderConfigured && state.folderPermission !== 'granted') ? '#fbbf24' : '#94a3b8');
+  if (retry) { retry.hidden = !(state.failed || state.syncError || state.syncUncertain); retry.disabled = !!state.pending; }
+  if (refresh) refresh.disabled = !!(state.pending || state.reading || state.folderSaving || state.failed || state.syncActive);
+  if (dot) dot.style.display = draftSaving || state.pending || state.reading || state.folderSaving || state.syncActive ? 'block' : 'none';
+}
+async function dsrDoRefresh() {
+  var wasDirty = _dsrDirty;
+  _dsrDirty = false;
+  var result = await window.dataSdk.refresh();
+  if (!result.isOk) {
+    _dsrDirty = _dsrDirty || wasDirty;
+    showToast('ยังซิงก์ไม่ได้ · ข้อมูลในเครื่องไม่หาย', 'error');
+  } else {
+    renderPage();
+    showToast(window.dataSdk.getUrl && window.dataSdk.getUrl() ? 'ซิงก์ข้อมูลแล้ว' : 'โหลดข้อมูลจากเครื่องแล้ว');
+  }
+  return result;
+}
+function dsrRequestRefresh() {
+  if (window.dataSdk.isBusy() || Object.values(_qt).some(function (st) { return !!st.debounce; })) {
+    showToast('กรุณารอให้บันทึกเสร็จ หรือบันทึกอีกครั้งก่อนรีเฟรช', 'error');
+    return;
+  }
+  if (_dsrDirty) {
+    showConfirm('รีเฟรชจะโหลดข้อมูลที่บันทึกแล้ว และแทนที่ข้อมูลบนหน้าจอ\nหากยังมีข้อมูลที่ไม่ได้บันทึก ให้กดยกเลิกและบันทึกก่อน', dsrDoRefresh);
+    return;
+  }
+  return dsrDoRefresh();
+}
 
 window.previewPartnerReceipt = previewPartnerReceipt;
 window.printPartnerReceipt = printPartnerReceipt;
@@ -4249,6 +4919,10 @@ window.openDSRPrintOverlay = openDSRPrintOverlay;
   const result = await window.dataSdk.init({
     onDataChanged: function(data) {
       allData = data;
+      var deviceConfig = window.dataSdk && window.dataSdk.getDeviceConfig ? window.dataSdk.getDeviceConfig() : {};
+      if (deviceConfig && Object.keys(deviceConfig).length && window.elementSdk) {
+        Object.assign(window.elementSdk.config, deviceConfig);
+      }
       // Load config from Sheets only if user has never saved locally
       var cfgRecord = data.find(function(r){ return r.record_type === 'config'; });
       if (cfgRecord && window.elementSdk) {
@@ -4264,11 +4938,30 @@ window.openDSRPrintOverlay = openDSRPrintOverlay;
           try { localStorage.setItem('DSR_config', JSON.stringify(window.elementSdk.config)); } catch(e) {}
         }
       }
-      safeRenderPage();
+      // Render once from the local database. Background Google updates only replace
+      // the data model, so they never steal focus or make the form jump while typing.
+      if (!window._dsrInitialDataRendered) {
+        window._dsrInitialDataRendered = true;
+        safeRenderPage();
+      }
     }
   });
-  if (!result.isOk) console.error('Data SDK init failed');
+  if (!result.isOk) {
+    console.error('Data SDK init failed');
+  } else if (window.dataSdk.storageFolderInfo) {
+    var firstFolderInfo = await window.dataSdk.storageFolderInfo();
+    if (firstFolderInfo.supported && !firstFolderInfo.configured) {
+      navigate('settings');
+      setTimeout(function () { showToast('ตั้งค่าโฟลเดอร์ในเครื่อง และใส่ Google Apps Script URL ได้ที่หน้านี้'); }, 150);
+    }
+  }
 })();
+
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('./sw.js').catch(function () {});
+  });
+}
 
 if (window.lucide) lucide.createIcons();
 
@@ -5768,6 +6461,43 @@ function htmlText(v) { return esc(v || '').replace(/\n/g, '<br>'); }
   };
 })();
 /* ===== END BOQ SUPPLIER CATEGORY + SYNC BADGE PATCH ===== */
+
+// Explicit Save actions flush the queued changes to Google once, after all local
+// calculations are finished. Typing and number recalculation stay offline.
+[
+  'saveProfile', 'updateProfile', 'saveProject', 'saveInstallment', 'saveExpense',
+  'addSimpleTimelineItem', 'saveProjectProgress', 'addTimelineItem',
+  'editProjectName', 'addPartnerToPie', 'savePartnerInst', 'createQuotation',
+  'saveAllocRow', 'saveBOQToProject', 'issueInvoice', 'issueReceipt', 'markPaid',
+  'markProjectDone', 'deleteInstRecord', 'removeSplitFromPie'
+].forEach(function (name) {
+  var original = window[name];
+  if (typeof original !== 'function') return;
+  window[name] = async function () {
+    var page = currentPage, context = window._navCtx, editVersion = _dsrEditVersion;
+    var saved = window._dsrSavedVersion || 0, failed = window._dsrFailedVersion || 0;
+    var result = await original.apply(this, arguments);
+    var didSave = (window._dsrSavedVersion || 0) > saved && (window._dsrFailedVersion || 0) === failed;
+    if (didSave && window.dataSdk.flushGoogle && window.dataSdk.getSyncInfo) {
+      var syncInfo = await window.dataSdk.getSyncInfo();
+      if (syncInfo && syncInfo.enabled && syncInfo.configured && syncInfo.pending) {
+        var syncResult = await window.dataSdk.flushGoogle();
+        if (!syncResult || !syncResult.isOk) {
+          var failedInfo = await window.dataSdk.getSyncInfo();
+          showToast('ข้อมูลไม่หาย · ' + ((failedInfo && failedInfo.error) || 'รอส่ง Google'), 'error');
+        }
+      }
+    }
+    if (didSave &&
+        page === currentPage && context === window._navCtx && editVersion === _dsrEditVersion &&
+        !window.dataSdk.isBusy() && !Object.values(_qt).some(function (st) { return !!st.debounce; })) {
+      var main = document.getElementById('main-content'), scroll = main.scrollTop;
+      renderPage();
+      main.scrollTop = scroll;
+    }
+    return result;
+  };
+});
 
 </script>
 </body>

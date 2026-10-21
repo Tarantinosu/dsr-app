@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DSR+ ย้ายข้อมูลจาก Google Sheet</title>
+  <link rel="stylesheet" href="assets/tailwind.css">
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-5">
+  <main class="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl">
+    <div class="text-xs uppercase tracking-widest text-orange-400 mb-2">DSR+ OFFLINE MIGRATION</div>
+    <h1 class="text-2xl font-bold text-white">ย้ายข้อมูลเดิมจาก Google Sheet</h1>
+    <p class="text-sm text-slate-400 mt-2 leading-6">ใช้หน้านี้เพียงครั้งเดียวขณะที่ต่ออินเทอร์เน็ต ระบบจะอ่านข้อมูลเดิมแล้วดาวน์โหลดเป็นไฟล์ Backup จากนั้นนำไฟล์ไปกู้คืนในหน้า ตั้งค่า ของ DSR Offline</p>
+    <label class="block text-sm text-slate-300 mt-6 mb-2">Apps Script Web App URL เดิม</label>
+    <input id="script-url" type="url" placeholder="https://script.google.com/macros/s/.../exec" class="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-orange-500">
+    <button id="export-button" type="button" onclick="exportGoogleData()" class="w-full mt-3 px-4 py-3 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm font-semibold">อ่านข้อมูลและดาวน์โหลด Backup</button>
+    <div id="status" class="mt-4 text-sm text-slate-500"></div>
+    <div class="mt-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 leading-6">ไฟล์ที่ได้จะชื่อ DSR_Offline_Backup_From_Google.json หลังจาก Import สำเร็จแล้ว DSR Offline จะไม่ต้องใช้ URL นี้อีก</div>
+    <a href="index.html" class="inline-block mt-5 text-sm text-slate-400 hover:text-white">← กลับไป DSR Offline</a>
+  </main>
+  <script>
+  async function exportGoogleData() {
+    var input = document.getElementById('script-url');
+    var button = document.getElementById('export-button');
+    var status = document.getElementById('status');
+    var url = input.value.trim();
+    if (!/^https:\/\/script\.google\.com\//i.test(url)) {
+      status.textContent = 'กรุณาวาง Apps Script URL ที่ถูกต้อง'; status.className = 'mt-4 text-sm text-red-400'; return;
+    }
+    button.disabled = true; button.textContent = 'กำลังอ่านข้อมูล…';
+    status.textContent = 'กำลังเชื่อมต่อ Google Sheet'; status.className = 'mt-4 text-sm text-slate-400';
+    try {
+      var response = await fetch(url + (url.includes('?') ? '&' : '?') + 'action=read', { redirect:'follow' });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      var result = await response.json();
+      if (!result || !result.isOk || !Array.isArray(result.records)) throw new Error('รูปแบบข้อมูลไม่ถูกต้อง');
+      var configRecord = result.records.find(function (item) { return item.record_type === 'config'; }) || {};
+      var config = Object.assign({}, configRecord); delete config.__backendId; delete config.record_type;
+      var backup = { format:'DSR_OFFLINE_BACKUP', version:1, exported_at:new Date().toISOString(), source:'google-sheet', records:result.records, config:config };
+      var blob = new Blob([JSON.stringify(backup, null, 2)], { type:'application/json;charset=utf-8' });
+      var objectUrl = URL.createObjectURL(blob);
+      var link = document.createElement('a'); link.href = objectUrl; link.download = 'DSR_Offline_Backup_From_Google.json'; document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 1000);
+      status.textContent = 'สำเร็จ · ดาวน์โหลดข้อมูล ' + result.records.length + ' รายการแล้ว'; status.className = 'mt-4 text-sm text-emerald-400';
+    } catch (error) {
+      status.textContent = 'อ่านข้อมูลไม่สำเร็จ: ' + (error.message || error); status.className = 'mt-4 text-sm text-red-400';
+    } finally {
+      button.disabled = false; button.textContent = 'อ่านข้อมูลและดาวน์โหลด Backup';
+    }
+  }
+  </script>
+</body>
+</html>
