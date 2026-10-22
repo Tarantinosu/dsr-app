@@ -1,5 +1,5 @@
 /* DSR+ app shell: keeps the interface available when the network is unavailable. */
-var CACHE_NAME = 'dsr-hybrid-v12-drive-connect';
+var CACHE_NAME = 'dsr-hybrid-v13-queue-recovery';
 var APP_SHELL = [
   './',
   './index.html',

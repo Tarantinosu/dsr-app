@@ -427,12 +427,24 @@
 
         var operation = operations[0];
         if (operation.action === 'create' && operation.uncertain) {
-          syncError = 'รายการใหม่อาจส่งถึง Google แล้ว · กดตรวจสอบการซิงก์';
-          syncErrorCode = 'uncertain-create';
-          syncErrorDetail = 'ระบบหยุดส่งซ้ำเพื่อป้องกันรายการซ้ำ';
-          syncErrorAt = new Date().toISOString();
-          syncUncertain = true;
-          break;
+          var verification = await fetchServerRecords();
+          if (!verification.isOk) {
+            rememberSyncError(verification);
+            syncUncertain = true;
+            break;
+          }
+          var recovery = await reconcileUncertainCreates(verification.records);
+          if (recovery.remaining) {
+            syncError = 'ยังตรวจสอบรายการค้างไม่สำเร็จ · กดลองส่ง Google อีกครั้ง';
+            syncErrorCode = 'uncertain-create';
+            syncErrorDetail = 'ข้อมูลยังอยู่ในเครื่องและยังไม่ได้ลบออกจากคิว';
+            syncErrorAt = new Date().toISOString();
+            syncUncertain = true;
+            break;
+          }
+          // Re-read the queue: the uncertain create was either matched to an
+          // existing Google row or released for an idempotent retry.
+          continue;
         }
         var result = await sendOperation(operation);
         if (!result.isOk) {
@@ -507,12 +519,25 @@
         return operation.action === 'create' && operation.uncertain;
       });
       var resolved = 0;
+      var released = 0;
       for (var index = 0; index < uncertainCreates.length; index++) {
         var operation = uncertainCreates[index];
         var serverRecord = (serverRecords || []).find(function (record) {
           return record.client_sync_id && record.client_sync_id === operation.localId;
         });
-        if (!serverRecord || !serverRecord.__backendId) continue;
+        if (!serverRecord || !serverRecord.__backendId) {
+          // The previous request did not reach Google. It is safe to release
+          // this create because every retry keeps the same client_sync_id and
+          // the Apps Script backend deduplicates on that value.
+          operation.uncertain = false;
+          operation.error = '';
+          operation.errorDetail = '';
+          operation.attempts = 0;
+          operation.updatedAt = new Date().toISOString();
+          await putOperation(operation);
+          released++;
+          continue;
+        }
         await local.remapBackendId(operation.localId, serverRecord.__backendId);
         await remapQueuedIds(operation.localId, serverRecord.__backendId);
         await deleteOperation(operation.seq);
@@ -523,8 +548,8 @@
         return operation.action === 'create' && operation.uncertain;
       });
       syncUncertain = remaining;
-      if (!remaining && resolved) clearSyncError();
-      return { resolved: resolved, remaining: remaining };
+      if (!remaining && (resolved || released)) clearSyncError();
+      return { resolved: resolved, released: released, remaining: remaining };
     }
 
     async function pullServer() {
@@ -680,7 +705,13 @@
       testConnection: async function () {
         if (!syncEnabled || !url) return { isOk: false, error: 'not-configured' };
         var result = await fetchServerRecords();
-        if (!result.isOk) rememberSyncError(result); else clearSyncError();
+        if (!result.isOk) {
+          rememberSyncError(result);
+        } else {
+          var recovery = await reconcileUncertainCreates(result.records);
+          clearSyncError();
+          if (recovery.resolved || recovery.released) scheduleSync(0);
+        }
         emitStatus();
         return result.isOk ? { isOk: true, count: result.records.length, transport: transportMode } : result;
       },
@@ -695,9 +726,9 @@
         }
         var reconciliation = await reconcileUncertainCreates(read.records);
         if (reconciliation.remaining) {
-          syncError = 'พบรายการที่สถานะไม่แน่นอน · ยังไม่ส่งซ้ำเพื่อป้องกันข้อมูลซ้ำ';
+          syncError = 'ยังปลดรายการค้างไม่สำเร็จ · ข้อมูลยังอยู่ในเครื่อง';
           syncErrorCode = 'uncertain-create';
-          syncErrorDetail = 'ตรวจ Google แล้วแต่ไม่พบ client_sync_id ของรายการใหม่';
+          syncErrorDetail = 'กดทดสอบ Google แล้วลองอีกครั้ง';
           syncErrorAt = new Date().toISOString();
           emitStatus();
           return { isOk: false, error: 'uncertain-create', pending: queueCount };
