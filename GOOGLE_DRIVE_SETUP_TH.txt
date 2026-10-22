@@ -1,0 +1,39 @@
+ตั้งค่า Google Drive สำหรับ DSR+ (เจ้าของระบบทำครั้งเดียว)
+=========================================================
+
+ผลลัพธ์หลังตั้งค่า
+- ผู้ใช้งานกด “เชื่อมต่อ Google Drive” แล้วเลือกบัญชี Google ได้ทันที
+- ระบบสร้างโฟลเดอร์หลัก “DSR Projects” ใน Drive ของบัญชีที่เชื่อมต่อ
+- ทุกโปรเจกต์มีโฟลเดอร์ของตัวเอง พร้อมโฟลเดอร์ย่อย:
+  01 Documents
+  02 Presentations
+  03 Reference
+- ไฟล์จริงอยู่ใน Google Drive ส่วน Google Sheet เก็บเฉพาะชื่อไฟล์ รหัสไฟล์ และลิงก์
+
+ขั้นตอนตั้งค่าครั้งเดียว
+1. เปิด https://console.cloud.google.com/
+2. สร้างหรือเลือก Google Cloud Project สำหรับ DSR+
+3. ไปที่ APIs & Services > Library แล้วเปิด “Google Drive API”
+4. ไปที่ APIs & Services > OAuth consent screen แล้วตั้งค่าหน้าขออนุญาต
+5. ไปที่ APIs & Services > Credentials
+6. กด Create credentials > OAuth client ID
+7. เลือก Application type: Web application
+8. เพิ่ม Authorized JavaScript origins ต่อไปนี้:
+   https://tarantinosu.github.io
+   http://127.0.0.1:8765
+9. สร้างแล้วคัดลอก Client ID ที่ลงท้ายด้วย .apps.googleusercontent.com
+10. เปิด DSR+ > ตั้งค่าระบบ > Google Drive
+11. เปิด “ตั้งค่าสำหรับเจ้าของระบบ (ทำครั้งเดียว)” แล้ววาง Client ID
+12. กดบันทึกด้านล่างของหน้าตั้งค่า
+
+วิธีใช้ของผู้ใช้งาน
+1. เปิด DSR+ > ตั้งค่าระบบ
+2. กด “เชื่อมต่อ Google Drive”
+3. เลือกบัญชี Google และกดอนุญาต
+4. ระบบจะสร้างโฟลเดอร์ให้โปรเจกต์เดิมที่ยังไม่มีโฟลเดอร์ และโปรเจกต์ใหม่จะสร้างอัตโนมัติ
+
+หมายเหตุ
+- DSR+ ขอสิทธิ์ drive.file เพื่อจัดการเฉพาะไฟล์/โฟลเดอร์ที่แอปสร้างหรือผู้ใช้เปิดให้แอป
+- การเชื่อมต่อบัญชีมีอายุจำกัด หากหมดอายุให้กด “เชื่อมต่อ Google Drive” อีกครั้ง
+- หากใช้ OAuth consent screen แบบ Testing ต้องเพิ่มบัญชีผู้ใช้เป็น Test users
+- ห้ามสร้างหรือใส่ OAuth Client Secret ในหน้าเว็บ ใช้เฉพาะ Client ID เท่านั้น

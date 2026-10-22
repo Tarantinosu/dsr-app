@@ -9,8 +9,10 @@
   <link rel="stylesheet" href="assets/tailwind.css">
   <script src="assets/lucide.min.js"></script>
   <script src="assets/xlsx.full.min.js"></script>
-  <script src="dsr-local.js?v=20261020-google-proxy-fix"></script>
-  <script src="dsr-hybrid.js?v=20261021-cross-device-sync"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="dsr-drive.js?v=20261022-drive-connect"></script>
+  <script src="dsr-local.js?v=20261022-drive-connect"></script>
+  <script src="dsr-hybrid.js?v=20261022-drive-connect"></script>
   <script>
 // ===== OFFLINE SDK — data stays on this computer =====
 (function () {
@@ -315,6 +317,7 @@ const defaultConfig = {
   company_signature_data: '',
   company_stamp_data: '',
   company_payment_qr_data: '',
+  google_drive_client_id: '',
   background_color: '#050505',
   surface_color: '#0b0b0b',
   text_color: '#e2e8f0',
@@ -841,7 +844,7 @@ function renderProjects(el) {
     '<button class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="showProjectForm()"><i data-lucide="plus" class="w-4 h-4"></i> สร้างโปรเจกต์</button>' +
     '</div></div>' +
     '<div class="flex gap-2 mb-4">' +
-    '<div class="relative flex-1"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i><input type="text" placeholder="ค้นหาโปรเจกต์..." oninput="_projSearch(this,document.getElementById(\'main-content\'))" class="w-full pl-9 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 focus:outline-none"></div>' +
+    '<div class="relative flex-1"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i><input type="text" placeholder="ค้นหาโปรเจกต์..." value="'+esc(el._prsearch||'')+'" oninput="_projSearch(this,document.getElementById(\'main-content\'))" class="w-full pl-9 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 focus:outline-none"></div>' +
     '<button class="'+b1+'" onclick="_projectView=\'list\';localStorage.setItem(\'DSR_prv\',\'list\');renderProjects(document.getElementById(\'main-content\'))"><i data-lucide="list" class="w-4 h-4"></i></button>' +
     '<button class="'+b2+'" onclick="_projectView=\'grid\';localStorage.setItem(\'DSR_prv\',\'grid\');renderProjects(document.getElementById(\'main-content\'))"><i data-lucide="layout-grid" class="w-4 h-4"></i></button>' +
     '</div>' +
@@ -890,7 +893,7 @@ function renderCompletedProjects(el) {
     '<button class="'+b2+'" onclick="_projectView=\'grid\';localStorage.setItem(\'DSR_prv\',\'grid\');renderCompletedProjects(document.getElementById(\'main-content\'))"><i data-lucide="layout-grid" class="w-4 h-4"></i></button>' +
     '</div></div>' +
     '<div class="relative mb-4"><i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i>' +
-    '<input type="text" placeholder="ค้นหาโครงการเสร็จสิ้น..." oninput="_cpSearch(this,document.getElementById(\'main-content\'))" class="w-full pl-9 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 focus:outline-none"></div>' +
+    '<input type="text" placeholder="ค้นหาโครงการเสร็จสิ้น..." value="'+esc(el._cpsearch||'')+'" oninput="_cpSearch(this,document.getElementById(\'main-content\'))" class="w-full pl-9 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:border-orange-500 focus:outline-none"></div>' +
     (filtered.length === 0 ?
       '<div class="flex flex-col items-center justify-center py-16 text-center">' +
       '<div class="w-16 h-16 rounded-2xl bg-emerald-900/20 flex items-center justify-center mb-4"><i data-lucide="folder-check" class="w-8 h-8 text-emerald-700"></i></div>' +
@@ -929,8 +932,48 @@ async function saveProject(e) {
     fixed_cost: parseFloat(document.getElementById('proj-cost').value) || 0,
     status: 'active', created_at: new Date().toISOString()
   });
-  if (result.isOk) { showToast('สร้างโปรเจกต์สำเร็จ'); await addLog(pid, 'สร้างโปรเจกต์', document.getElementById('proj-name').value); }
+  if (result.isOk) {
+    showToast('สร้างโปรเจกต์สำเร็จ');
+    await addLog(pid, 'สร้างโปรเจกต์', document.getElementById('proj-name').value);
+    if (window.dsrDrive && window.dsrDrive.isConnected()) {
+      await ensureProjectDriveFolder(pid, true, false);
+    }
+  }
   else { showToast('เกิดข้อผิดพลาด', 'error'); btn.disabled = false; btn.textContent = 'สร้าง'; }
+}
+
+async function ensureProjectDriveFolder(projId, silent, allowConnect) {
+  const project = allData.find(function(r) { return r.record_type === 'project' && r.project_id === projId; });
+  if (!project || !window.dsrDrive) return { isOk:false, error:'drive-unavailable' };
+  if (!window.dsrDrive.isConnected()) {
+    if (!allowConnect) return { isOk:false, error:'not-connected' };
+    const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
+    const clientId = (cfg && cfg.google_drive_client_id) || window.dsrDrive.getClientId();
+    if (!clientId) {
+      showToast('ยังไม่ได้ตั้งค่า Google OAuth Client ID · ไปที่ตั้งค่าระบบก่อน', 'error');
+      return { isOk:false, error:'missing-client-id' };
+    }
+    const connected = await window.dsrDrive.connect(clientId);
+    if (!connected.isOk) {
+      showToast('เชื่อมต่อ Google Drive ไม่สำเร็จ', 'error');
+      return connected;
+    }
+  }
+  if (!silent) showToast('กำลังสร้างโฟลเดอร์ Google Drive…');
+  const folder = await window.dsrDrive.ensureProjectFolder(project);
+  if (!folder.isOk) {
+    if (!silent) showToast('สร้างโฟลเดอร์ Drive ไม่สำเร็จ' + (folder.detail ? ' · ' + folder.detail : ''), 'error');
+    return folder;
+  }
+  const updated = Object.assign({}, project, {
+    drive_folder_id: folder.folderId,
+    drive_folder_url: folder.folderUrl,
+    drive_folder_name: folder.folderName,
+    drive_connected_at: new Date().toISOString()
+  });
+  const saved = await window.dataSdk.update(updated);
+  if (saved.isOk && !silent) showToast('สร้างโฟลเดอร์ Google Drive แล้ว');
+  return saved.isOk ? Object.assign({ isOk:true }, folder) : saved;
 }
 
 async function editProjectName(projId) {
@@ -1790,11 +1833,14 @@ function renderProjectDetail(el, projId) {
   const displayStatus = getProjectDisplayStatus(project);
   const allInstPaid = installments.length > 0 && installments.every(function(i){ return i.status === 'paid'; });
   const showDoneBtn = displayStatus !== 'done' && allInstPaid;
+  const driveButton = project.drive_folder_url
+    ? '<a href="' + esc(project.drive_folder_url) + '" target="_blank" rel="noopener" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm flex items-center gap-2"><i data-lucide="hard-drive" class="w-4 h-4"></i> Google Drive</a>'
+    : '<button class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="ensureProjectDriveFolder(\'' + projId + '\',false,true)"><i data-lucide="hard-drive-upload" class="w-4 h-4"></i> สร้างโฟลเดอร์ Drive</button>';
 
   el.innerHTML = '<div class="p-6 fade-in">' +
     '<button class="text-sm text-slate-400 hover:text-white mb-4 flex items-center gap-1" onclick="navigate(\'projects\')"><i data-lucide="arrow-left" class="w-4 h-4"></i> กลับ</button>' +
     '<div class="flex justify-between items-start mb-6"><div><div class="flex items-center gap-2"><h1 class="text-2xl font-bold text-white">' + (project.project_name||'Untitled') + '</h1><button type="button" class="p-1 text-slate-500 hover:text-orange-400 rounded" title="แก้ไขชื่อโปรเจกต์" aria-label="แก้ไขชื่อโปรเจกต์" onclick="editProjectName(\'' + projId + '\')"><i data-lucide="pencil" class="w-4 h-4"></i></button></div><p class="text-slate-400 text-sm">ลูกค้า: ' + (project.client_name||'-') + ' · Fixed Cost: ' + fmt(project.fixed_cost||0) + ' บาท</p></div>' +
-    '<div class="flex items-center gap-2">' + (showDoneBtn ? '<button class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="markProjectDone(\'' + projId + '\',event)"><i data-lucide="check-circle" class="w-4 h-4"></i> เสร็จสิ้น</button>' : '') + '<span class="' + badgeClass(displayStatus) + '">' + displayStatus + '</span></div></div>' +
+    '<div class="flex items-center gap-2 flex-wrap justify-end">' + driveButton + (showDoneBtn ? '<button class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="markProjectDone(\'' + projId + '\',event)"><i data-lucide="check-circle" class="w-4 h-4"></i> เสร็จสิ้น</button>' : '') + '<span class="' + badgeClass(displayStatus) + '">' + displayStatus + '</span></div></div>' +
     '<div class="flex gap-1 border-b border-slate-800 mb-4">' +
     '<button class="tab-btn active" onclick="showTab(\'qt\',this)">ใบเสนอราคา</button>' +
     '<button class="tab-btn" onclick="showTab(\'split\',this)">พาร์ทเนอร์ (' + splits.length + ')</button>' +
@@ -3130,6 +3176,50 @@ function _docSearchDocuments(input) {
   if (empty) empty.classList.toggle('hidden', visibleGroups > 0 || !query);
 }
 
+function setDocumentGroupMode(mode) {
+  window.docGroupMode = mode === 'project' ? 'project' : 'date';
+  try { localStorage.setItem('DSR_doc_group_mode', window.docGroupMode); } catch (ignore) {}
+  renderDocuments(document.getElementById('main-content'));
+}
+
+function showGlobalExtDocUpload() {
+  const select = document.getElementById('doc-upload-project');
+  const host = document.getElementById('doc-global-upload');
+  const projId = select ? select.value : '';
+  if (!projId || !host) { showToast('กรุณาเลือกโปรเจกต์ก่อน', 'error'); return; }
+  host.innerHTML = '<div id="ext-upload-' + esc(projId) + '"></div>';
+  showUploadExtDoc(projId);
+  if (host.scrollIntoView) host.scrollIntoView({ behavior:'smooth', block:'center' });
+}
+
+function renderDocumentRowHtml(d, p, showProjectInfo) {
+  const colorCls  = d.type==='QT'?'text-orange-400':d.type==='INV'?'text-amber-400':d.type==='REC'?'text-emerald-400':d.type==='PR'?'text-sky-400':d.type==='EXT'?'text-purple-400':'text-red-400';
+  const typeLabel = docTypeLabel(d.type);
+  const docSearch = ((d.num||'')+' '+docTypeSearchTerms(d.type)+' '+fmtDate(d.date)+' '+(p.project_name||'')+' '+(p.client_name||'')).toLowerCase();
+  let btns = '';
+  if (d.type==='WHT') {
+    btns = '<button type="button" class="text-xs text-orange-400 hover:text-orange-300" onclick="event.stopPropagation();previewWHT(\''+d.splitId+'\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button>' +
+           '<button type="button" class="text-xs text-red-400 hover:text-red-300 ml-2" onclick="event.stopPropagation();printWHT(\''+d.splitId+'\')"><i data-lucide="printer" class="w-3 h-3 inline"></i> พิมพ์</button>';
+  } else if (d.type==='PR') {
+    btns = '<button type="button" class="text-xs text-orange-400 hover:text-orange-300" onclick="return handlePartnerReceiptPreview(event,\''+d.splitId+'\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button>' +
+           '<button type="button" class="text-xs text-emerald-400 hover:text-emerald-300 ml-2" onclick="return handlePartnerReceiptPrint(event,\''+d.splitId+'\')"><i data-lucide="printer" class="w-3 h-3 inline"></i> พิมพ์</button>';
+  } else if (d.type==='EXT') {
+    btns = '<button type="button" class="text-xs text-purple-400 hover:text-purple-300" onclick="event.stopPropagation();viewExtDoc(\''+d.extId+'\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button>' +
+           '<button type="button" class="text-xs text-red-400 hover:text-red-300 ml-2" onclick="event.stopPropagation();deleteExtDoc(\''+d.extId+'\')"><i data-lucide="trash-2" class="w-3 h-3 inline"></i> ลบ</button>';
+  } else {
+    btns = '<button type="button" class="text-xs text-orange-400 hover:text-orange-300" onclick="event.stopPropagation();previewDoc(\''+p.project_id+'\',\''+d.type+'\',\''+d.num+'\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button>' +
+           '<button type="button" class="text-xs text-emerald-400 hover:text-emerald-300 ml-2" onclick="event.stopPropagation();printDoc(\''+p.project_id+'\',\''+d.type+'\',\''+d.num+'\')"><i data-lucide="printer" class="w-3 h-3 inline"></i> พิมพ์</button>';
+  }
+  const projectInfo = showProjectInfo
+    ? '<div class="min-w-0 flex-1"><div class="text-xs text-white truncate">'+esc(p.project_name||'-')+'</div><div class="text-[11px] text-slate-500 truncate">ลูกค้า: '+esc(p.client_name||'-')+'</div></div>'
+    : '<div class="flex-1"></div>';
+  return '<div class="flex items-center gap-2 p-2.5 bg-slate-800/50 rounded-lg flex-wrap" data-doc-row data-doc-search="'+esc(docSearch)+'">' +
+    '<span class="text-[10px] px-2 py-0.5 rounded bg-slate-900 text-slate-400 flex-shrink-0">'+typeLabel+'</span>' +
+    '<span class="mono text-xs '+colorCls+' flex-shrink-0">'+esc(d.num||'-')+'</span>' +
+    '<span class="text-xs text-slate-500 flex-shrink-0">'+fmtDate(d.date)+'</span>' +
+    projectInfo + '<div class="flex-shrink-0">' + btns + '</div></div>';
+}
+
 function renderDocuments(el) {
   const projects = getProjects();
   const selectedClient = window.docClientFilter || '';
@@ -3137,6 +3227,8 @@ function renderDocuments(el) {
   const selectedDay    = window.docDayFilter    || '';
   const selectedType   = window.docTypeFilter   || '';
   const searchQuery    = window.docSearchQuery  || '';
+  const groupMode      = window.docGroupMode || localStorage.getItem('DSR_doc_group_mode') || 'date';
+  window.docGroupMode = groupMode;
   const clients = Array.from(new Set(projects.map(function(p){ return p.client_name||''; }).filter(Boolean))).sort();
 
   const projectDocs = projects.map(function(p) {
@@ -3198,6 +3290,55 @@ function renderDocuments(el) {
   const clientReceiptDocs  = allFilteredDocs.filter(function(d){ return d.type==='REC'; });
   const extDocs            = allFilteredDocs.filter(function(d){ return d.type==='EXT'; });
 
+  const projectGroupsHtml = filteredGroups.map(function(group) {
+    const p = group.project;
+    const docs = group.docs;
+    const projectSearch = ((p.project_name||'')+' '+(p.client_name||'')).toLowerCase();
+    return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4" data-doc-group data-doc-total="'+docs.length+'" data-project-search="'+esc(projectSearch)+'">' +
+      '<div class="flex items-center justify-between gap-3 mb-3">' +
+        '<div><div class="text-sm font-semibold text-white">'+esc(p.project_name||'-')+'</div>' +
+        '<div class="text-xs text-slate-500">ลูกค้า: '+esc(p.client_name||'-')+'</div></div>' +
+        '<div class="flex items-center gap-2">' +
+          '<span class="text-xs text-slate-500" data-doc-group-count>'+docs.length+' เอกสาร</span>' +
+          '<button class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs flex items-center gap-1" onclick="showUploadExtDoc(\''+p.project_id+'\')"><i data-lucide="upload" class="w-3 h-3"></i> อัปโหลดเอกสาร</button>' +
+        '</div>' +
+      '</div>' +
+      '<div id="ext-upload-'+p.project_id+'"></div>' +
+      (docs.length===0 ? '<p class="text-xs text-slate-500 py-2">ยังไม่มีเอกสาร</p>' :
+        '<div class="space-y-1">' + docs.map(function(d) { return renderDocumentRowHtml(d, p, false); }).join('') + '</div>') +
+      '</div>';
+  }).join('');
+
+  const flatDocuments = [];
+  filteredGroups.forEach(function(group) {
+    group.docs.forEach(function(doc) { flatDocuments.push({ doc:doc, project:group.project }); });
+  });
+  flatDocuments.sort(function(a,b) {
+    return docDateValue(b.doc.date) - docDateValue(a.doc.date) ||
+      String(a.project.project_name||'').localeCompare(String(b.project.project_name||''), 'th') ||
+      String(a.doc.num||'').localeCompare(String(b.doc.num||''), 'th');
+  });
+  const dateGroups = [];
+  flatDocuments.forEach(function(entry) {
+    const key = docDay(entry.doc) || 'no-date';
+    let group = dateGroups.length ? dateGroups[dateGroups.length-1] : null;
+    if (!group || group.key !== key) {
+      group = { key:key, date:entry.doc.date, items:[] };
+      dateGroups.push(group);
+    }
+    group.items.push(entry);
+  });
+  const dateGroupsHtml = dateGroups.map(function(group) {
+    const label = group.key === 'no-date' ? 'ไม่ระบุวันที่' : fmtDate(group.date);
+    return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4" data-doc-group data-doc-total="'+group.items.length+'" data-project-search="">' +
+      '<div class="flex items-center justify-between gap-3 mb-3">' +
+        '<div class="flex items-center gap-2"><div class="w-8 h-8 rounded-lg bg-orange-900/40 text-orange-400 flex items-center justify-center"><i data-lucide="calendar-days" class="w-4 h-4"></i></div>' +
+        '<div><div class="text-sm font-semibold text-white">'+esc(label)+'</div><div class="text-[11px] text-slate-500">เรียงเอกสารล่าสุดก่อน</div></div></div>' +
+        '<span class="text-xs text-slate-500" data-doc-group-count>'+group.items.length+' เอกสาร</span>' +
+      '</div><div class="space-y-1">' + group.items.map(function(entry) { return renderDocumentRowHtml(entry.doc, entry.project, true); }).join('') + '</div></div>';
+  }).join('');
+  const documentsListHtml = groupMode === 'project' ? projectGroupsHtml : dateGroupsHtml;
+
   el.innerHTML = '<div class="p-4 md:p-6 fade-in"><div class="flex items-center justify-between mb-1"><h1 class="text-2xl font-bold text-white">เอกสาร & พิมพ์</h1></div><p class="text-slate-400 text-sm mb-4">ค้นหาจากชื่อโปรเจกต์ ลูกค้า หรือเลขเอกสาร และเลือกประเภทที่ต้องการ</p>' +
     '<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">' +
       '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">Partner Receipt</div><div class="mono text-2xl text-sky-400 font-bold">'+partnerReceiptDocs.length+'</div></div>' +
@@ -3206,6 +3347,13 @@ function renderDocuments(el) {
       '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">เอกสารภายนอก</div><div class="mono text-2xl text-purple-400 font-bold">'+extDocs.length+'</div></div>' +
     '</div>' +
     '<div class="bg-slate-900 border border-orange-500/50 rounded-xl p-4 mb-5 shadow-lg shadow-orange-950/20">' +
+      '<div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-800 pb-3 mb-3">' +
+        '<div><div class="text-sm font-semibold text-white">รูปแบบการเรียงเอกสาร</div><div class="text-xs text-slate-500 mt-0.5">ระบบจะจำรูปแบบที่เลือกไว้</div></div>' +
+        '<div class="flex gap-2">' +
+          '<button type="button" class="px-3 py-2 rounded-lg border text-xs flex items-center gap-1.5 '+(groupMode==='date'?'bg-orange-600 border-orange-500 text-white':'bg-slate-800 border-slate-600 text-slate-300 hover:border-orange-500')+'" onclick="setDocumentGroupMode(\'date\')"><i data-lucide="calendar-days" class="w-3.5 h-3.5"></i> ตามวันที่ล่าสุด</button>' +
+          '<button type="button" class="px-3 py-2 rounded-lg border text-xs flex items-center gap-1.5 '+(groupMode==='project'?'bg-orange-600 border-orange-500 text-white':'bg-slate-800 border-slate-600 text-slate-300 hover:border-orange-500')+'" onclick="setDocumentGroupMode(\'project\')"><i data-lucide="folder" class="w-3.5 h-3.5"></i> ตามโปรเจกต์</button>' +
+        '</div>' +
+      '</div>' +
       '<div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">' +
         '<div class="md:col-span-2"><label for="doc-search-input" class="text-sm font-semibold text-orange-300 flex items-center gap-1.5"><i data-lucide="search" class="w-4 h-4"></i> ค้นหาเอกสาร</label>' +
           '<div class="relative mt-1.5"><i data-lucide="search" class="w-5 h-5 absolute left-3.5 top-1/2 -translate-y-1/2 text-orange-400 pointer-events-none"></i>' +
@@ -3222,51 +3370,15 @@ function renderDocuments(el) {
       '<div><label class="text-xs text-slate-400">วันที่</label><input type="date" value="'+selectedDay+'" class="w-full min-h-[44px] mt-1 px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-sm text-white" onchange="window.docDayFilter=this.value; renderDocuments(document.getElementById(\'main-content\'))"></div>' +
       '<div class="flex gap-2 items-center"><button type="button" class="min-h-[44px] px-4 py-2 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-white rounded-lg text-sm" onclick="window.docClientFilter=\'\';window.docMonthFilter=\'\';window.docDayFilter=\'\';window.docTypeFilter=\'\';window.docSearchQuery=\'\';renderDocuments(document.getElementById(\'main-content\'))">ล้างทั้งหมด</button>' +
       '<div id="doc-result-count" class="text-xs text-slate-400 flex items-center">พบ ' + filteredGroups.reduce(function(s,g){ return s+g.docs.length; },0) + ' เอกสาร</div></div></div>' +
-      '<div class="mt-3 text-xs text-slate-500 flex items-center gap-1"><i data-lucide="arrow-down" class="w-3 h-3"></i> เรียงวันที่ล่าสุดก่อน</div></div>' +
+      '<div class="mt-3 pt-3 border-t border-slate-800 flex flex-col md:flex-row md:items-end gap-2">' +
+        '<div class="flex-1"><label class="text-xs text-slate-400">อัปโหลดเอกสารเข้าโปรเจกต์</label><select id="doc-upload-project" class="w-full min-h-[42px] mt-1 px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-sm text-white"><option value="">-- เลือกโปรเจกต์ --</option>' + projects.map(function(p){ return '<option value="'+esc(p.project_id)+'">'+esc(p.project_name||p.project_id)+'</option>'; }).join('') + '</select></div>' +
+        '<button type="button" class="min-h-[42px] px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm flex items-center justify-center gap-1.5" onclick="showGlobalExtDocUpload()"><i data-lucide="upload" class="w-4 h-4"></i> อัปโหลดเอกสาร</button>' +
+        '<div class="text-xs text-slate-500 flex items-center gap-1 md:ml-2"><i data-lucide="arrow-down" class="w-3 h-3"></i> '+(groupMode==='date'?'ล่าสุดก่อน':'รวมตามโปรเจกต์')+'</div>' +
+      '</div></div><div id="doc-global-upload"></div>' +
     '<div id="doc-groups-container" class="space-y-3">' +
     (projects.length===0 ? '<p class="text-slate-500 text-sm text-center py-8">ยังไม่มีโปรเจกต์</p>' :
-      (filteredGroups.length===0 ? '<p class="text-slate-500 text-sm text-center py-8">ไม่พบเอกสารตามตัวกรองนี้</p>' :
-      filteredGroups.map(function(group) {
-        const p    = group.project;
-        const docs = group.docs;
-        const projectSearch = ((p.project_name||'')+' '+(p.client_name||'')).toLowerCase();
-        return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4" data-doc-group data-doc-total="'+docs.length+'" data-project-search="'+esc(projectSearch)+'">' +
-          '<div class="flex items-center justify-between gap-3 mb-3">' +
-            '<div><div class="text-sm font-semibold text-white">'+esc(p.project_name||'-')+'</div>' +
-            '<div class="text-xs text-slate-500">ลูกค้า: '+esc(p.client_name||'-')+'</div></div>' +
-            '<div class="flex items-center gap-2">' +
-              '<span class="text-xs text-slate-500" data-doc-group-count>'+docs.length+' เอกสาร</span>' +
-              '<button class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs flex items-center gap-1" onclick="showUploadExtDoc(\''+p.project_id+'\')"><i data-lucide="upload" class="w-3 h-3"></i> อัปโหลดเอกสาร</button>' +
-            '</div>' +
-          '</div>' +
-          '<div id="ext-upload-'+p.project_id+'"></div>' +
-          (docs.length===0 ? '<p class="text-xs text-slate-500 py-2">ยังไม่มีเอกสาร</p>' :
-            '<div class="space-y-1">' + docs.map(function(d) {
-              const colorCls  = d.type==='QT'?'text-orange-400':d.type==='INV'?'text-amber-400':d.type==='REC'?'text-emerald-400':d.type==='PR'?'text-sky-400':d.type==='EXT'?'text-purple-400':'text-red-400';
-              const typeLabel = docTypeLabel(d.type);
-              const docSearch = ((d.num||'')+' '+docTypeSearchTerms(d.type)+' '+fmtDate(d.date)).toLowerCase();
-              let btns = '';
-              if (d.type==='WHT') {
-                btns = '<button type="button" class="text-xs text-orange-400 hover:text-orange-300" onclick="event.stopPropagation();previewWHT(\''+d.splitId+'\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button>' +
-                       '<button type="button" class="text-xs text-red-400 hover:text-red-300 ml-2" onclick="event.stopPropagation();printWHT(\''+d.splitId+'\')"><i data-lucide="printer" class="w-3 h-3 inline"></i> พิมพ์</button>';
-              } else if (d.type==='PR') {
-                btns = '<button type="button" class="text-xs text-orange-400 hover:text-orange-300" onclick="return handlePartnerReceiptPreview(event,\''+d.splitId+'\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button>' +
-                       '<button type="button" class="text-xs text-emerald-400 hover:text-emerald-300 ml-2" onclick="return handlePartnerReceiptPrint(event,\''+d.splitId+'\')"><i data-lucide="printer" class="w-3 h-3 inline"></i> พิมพ์</button>';
-              } else if (d.type==='EXT') {
-                btns = '<button type="button" class="text-xs text-purple-400 hover:text-purple-300" onclick="event.stopPropagation();viewExtDoc(\''+d.extId+'\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button>' +
-                       '<button type="button" class="text-xs text-red-400 hover:text-red-300 ml-2" onclick="event.stopPropagation();deleteExtDoc(\''+d.extId+'\')"><i data-lucide="trash-2" class="w-3 h-3 inline"></i> ลบ</button>';
-              } else {
-                btns = '<button type="button" class="text-xs text-orange-400 hover:text-orange-300" onclick="event.stopPropagation();previewDoc(\''+p.project_id+'\',\''+d.type+'\',\''+d.num+'\')"><i data-lucide="eye" class="w-3 h-3 inline"></i> ดู</button>' +
-                       '<button type="button" class="text-xs text-emerald-400 hover:text-emerald-300 ml-2" onclick="event.stopPropagation();printDoc(\''+p.project_id+'\',\''+d.type+'\',\''+d.num+'\')"><i data-lucide="printer" class="w-3 h-3 inline"></i> พิมพ์</button>';
-              }
-              return '<div class="flex items-center gap-2 p-2.5 bg-slate-800/50 rounded-lg flex-wrap" data-doc-row data-doc-search="'+esc(docSearch)+'">' +
-                '<span class="text-[10px] px-2 py-0.5 rounded bg-slate-900 text-slate-400 flex-shrink-0">'+typeLabel+'</span>' +
-                '<span class="mono text-xs '+colorCls+' flex-shrink-0">'+esc(d.num||'-')+'</span>' +
-                '<span class="text-xs text-slate-500 flex-shrink-0">'+fmtDate(d.date)+'</span>' +
-                '<div class="flex-1"></div>' + btns + '</div>';
-            }).join('') + '</div>') +
-          '</div>';
-      }).join(''))) + '</div><p id="doc-search-empty" class="hidden text-slate-400 text-sm text-center py-10">ไม่พบเอกสารที่ค้นหา ลองเปลี่ยนคำค้นหรือประเภทเอกสาร</p></div>';
+      (filteredGroups.length===0 || (groupMode==='date' && flatDocuments.length===0) ? '<p class="text-slate-500 text-sm text-center py-8">ไม่พบเอกสารตามตัวกรองนี้</p>' : documentsListHtml)) +
+    '</div><p id="doc-search-empty" class="hidden text-slate-400 text-sm text-center py-10">ไม่พบเอกสารที่ค้นหา ลองเปลี่ยนคำค้นหรือประเภทเอกสาร</p></div>';
   if (window.lucide) lucide.createIcons();
   const searchInput = document.getElementById('doc-search-input');
   if (searchInput) _docSearchDocuments(searchInput);
@@ -3284,13 +3396,13 @@ function showUploadExtDoc(projId) {
       '<input id="ext-name-'+projId+'" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white focus:border-purple-500 focus:outline-none" placeholder="เช่น ใบเสร็จน้ำมัน, สัญญาจ้าง..."></div>' +
       '<div><label class="text-xs text-slate-400 block mb-1">วันที่เอกสาร</label>' +
       '<input id="ext-date-'+projId+'" type="date" value="'+today+'" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white focus:border-purple-500 focus:outline-none"></div>' +
-      '<div><label class="text-xs text-slate-400 block mb-1">ไฟล์ (รูปภาพหรือ PDF)</label>' +
-      '<input id="ext-file-'+projId+'" type="file" accept="image/*,application/pdf" class="w-full text-xs text-slate-400 file:mr-2 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-purple-600 file:text-white file:text-xs file:cursor-pointer hover:file:bg-purple-500" onchange="previewExtDoc(this,\''+projId+'\')"></div>' +
+      '<div><label class="text-xs text-slate-400 block mb-1">ไฟล์ (สูงสุด 25MB)</label>' +
+      '<input id="ext-file-'+projId+'" type="file" accept="image/*,application/pdf,.ppt,.pptx,.doc,.docx,.xls,.xlsx,.zip" class="w-full text-xs text-slate-400 file:mr-2 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-purple-600 file:text-white file:text-xs file:cursor-pointer hover:file:bg-purple-500" onchange="previewExtDoc(this,\''+projId+'\')"></div>' +
     '</div>' +
     '<div id="ext-preview-'+projId+'" class="mb-3"></div>' +
     '<div class="flex gap-2 justify-end">' +
       '<button type="button" class="px-4 py-2 bg-slate-700 text-slate-300 hover:bg-slate-600 rounded-lg text-sm" onclick="document.getElementById(\'ext-upload-'+projId+'\').innerHTML=\'\'">ยกเลิก</button>' +
-      '<button type="button" class="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="saveExtDoc(\''+projId+'\')"><i data-lucide="save" class="w-4 h-4"></i> บันทึก</button>' +
+      '<button id="ext-save-'+projId+'" type="button" class="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white rounded-lg text-sm flex items-center gap-2" onclick="saveExtDoc(\''+projId+'\')"><i data-lucide="cloud-upload" class="w-4 h-4"></i> อัปโหลดไป Drive</button>' +
     '</div>' +
     '</div>';
   if (window.lucide) lucide.createIcons();
@@ -3300,7 +3412,7 @@ function previewExtDoc(input, projId) {
   const file = input.files && input.files[0];
   const preview = document.getElementById('ext-preview-' + projId);
   if (!file || !preview) return;
-  if (file.size > 5 * 1024 * 1024) { showToast('ไฟล์ใหญ่เกิน 5MB', 'error'); input.value = ''; preview.innerHTML = ''; return; }
+  if (file.size > 25 * 1024 * 1024) { showToast('ไฟล์ใหญ่เกิน 25MB', 'error'); input.value = ''; preview.innerHTML = ''; return; }
   if (file.type.startsWith('image/')) {
     const url = URL.createObjectURL(file);
     preview.innerHTML = '<img src="'+url+'" class="max-h-32 rounded-lg border border-slate-600">';
@@ -3322,29 +3434,56 @@ async function saveExtDoc(projId) {
   const file   = fileEl && fileEl.files && fileEl.files[0];
   if (!name) { showToast('กรุณาใส่ชื่อเอกสาร', 'error'); return; }
   if (!file)  { showToast('กรุณาเลือกไฟล์', 'error'); return; }
-  const reader = new FileReader();
-  reader.onload = async function() {
+  if (file.size > 25 * 1024 * 1024) { showToast('ไฟล์ใหญ่เกิน 25MB', 'error'); return; }
+  const project = allData.find(function(r){ return r.record_type === 'project' && r.project_id === projId; });
+  if (!project) { showToast('ไม่พบโปรเจกต์', 'error'); return; }
+  const connected = await dsrEnsureGoogleDriveConnected();
+  if (!connected.isOk) return;
+  const btn = document.getElementById('ext-save-' + projId);
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader-circle" class="w-4 h-4 animate-spin"></i> กำลังอัปโหลด…'; if (window.lucide) lucide.createIcons(); }
+  try {
+    const uploaded = await window.dsrDrive.uploadProjectFile(project, file);
+    if (!uploaded.isOk) throw new Error(uploaded.detail || uploaded.error || 'อัปโหลด Drive ไม่สำเร็จ');
+    if (project.drive_folder_id !== uploaded.folderId || project.drive_folder_url !== uploaded.folderUrl) {
+      const projectSaved = await window.dataSdk.update(Object.assign({}, project, {
+        drive_folder_id: uploaded.folderId,
+        drive_folder_url: uploaded.folderUrl,
+        drive_folder_name: uploaded.folderName,
+        drive_connected_at: new Date().toISOString()
+      }));
+      if (!projectSaved.isOk) throw new Error('บันทึกลิงก์โฟลเดอร์ไม่สำเร็จ');
+    }
     const result = await window.dataSdk.create({
       record_type: 'external_doc',
       project_id: projId,
       ext_doc_name: name,
       ext_doc_date: date ? new Date(date + 'T12:00:00').toISOString() : new Date().toISOString(),
-      ext_doc_data: reader.result,
-      ext_doc_file_type: file.type,
+      ext_doc_file_type: uploaded.mimeType || file.type,
+      ext_doc_file_name: uploaded.fileName || file.name,
+      storage_provider: 'google_drive',
+      drive_file_id: uploaded.fileId,
+      drive_file_url: uploaded.fileUrl,
+      drive_download_url: uploaded.downloadUrl,
+      drive_folder_id: uploaded.folderId,
       created_at: new Date().toISOString()
     });
-    if (result.isOk) {
-      showToast('บันทึกเอกสารสำเร็จ ✓');
-      renderDocuments(document.getElementById('main-content'));
-    } else { showToast('เกิดข้อผิดพลาด', 'error'); }
-  };
-  reader.onerror = function() { showToast('อ่านไฟล์ไม่ได้', 'error'); };
-  reader.readAsDataURL(file);
+    if (!result.isOk) throw new Error('บันทึกข้อมูลเอกสารไม่สำเร็จ');
+    showToast('อัปโหลดเข้า Google Drive สำเร็จ ✓');
+    renderDocuments(document.getElementById('main-content'));
+  } catch (error) {
+    showToast((error && error.message) || 'อัปโหลดไม่สำเร็จ', 'error');
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="cloud-upload" class="w-4 h-4"></i> อัปโหลดไป Drive'; if (window.lucide) lucide.createIcons(); }
+  }
 }
 
 function viewExtDoc(extId) {
   const rec = allData.find(function(r){ return r.__backendId === extId; });
-  if (!rec || !rec.ext_doc_data) return;
+  if (!rec) return;
+  if (rec.drive_file_url) {
+    window.open(rec.drive_file_url, '_blank', 'noopener');
+    return;
+  }
+  if (!rec.ext_doc_data) return;
   const d = document.getElementById('confirm-dialog');
   d.style.display = 'flex';
   const isPdf = rec.ext_doc_file_type === 'application/pdf';
@@ -3366,7 +3505,16 @@ function viewExtDoc(extId) {
 async function deleteExtDoc(extId) {
   const rec = allData.find(function(r){ return r.__backendId === extId; });
   if (!rec) return;
-  showConfirm('ลบเอกสาร "' + (rec.ext_doc_name||'เอกสาร') + '" ?', async function() {
+  showConfirm('ลบเอกสาร "' + (rec.ext_doc_name||'เอกสาร') + '" ?\n\nไฟล์ใน Google Drive จะถูกย้ายไปถังขยะด้วย', async function() {
+    if (rec.drive_file_id) {
+      const connected = await dsrEnsureGoogleDriveConnected();
+      if (!connected.isOk) return;
+      const driveDeleted = await window.dsrDrive.deleteFile(rec.drive_file_id);
+      if (!driveDeleted.isOk) {
+        showToast('ลบไฟล์ใน Drive ไม่สำเร็จ · ยังไม่ได้ลบรายการ', 'error');
+        return;
+      }
+    }
     const r = await window.dataSdk.delete(rec);
     if (r.isOk) { showToast('ลบแล้ว'); renderDocuments(document.getElementById('main-content')); }
     else showToast('เกิดข้อผิดพลาด', 'error');
@@ -3876,6 +4024,69 @@ function clearCompanyAsset(key, previewId) {
   if (preview) preview.innerHTML = '<span class="text-xs text-slate-500">ยังไม่มีรูป</span>';
   if (window.elementSdk && window.elementSdk.config) window.elementSdk.config[key] = '';
 }
+
+async function dsrEnsureGoogleDriveConnected(silent) {
+  if (!window.dsrDrive) {
+    if (!silent) showToast('ระบบเชื่อมต่อ Google Drive ยังโหลดไม่สำเร็จ', 'error');
+    return { isOk:false, error:'drive-unavailable' };
+  }
+  if (window.dsrDrive.isConnected()) return { isOk:true, alreadyConnected:true };
+  const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
+  const input = document.getElementById('dsr-drive-client-id');
+  const clientId = String((input && input.value) || (cfg && cfg.google_drive_client_id) || window.dsrDrive.getClientId() || '').trim();
+  if (!clientId) {
+    if (!silent) showToast('เจ้าของระบบต้องตั้งค่า Google OAuth Client ID ก่อน', 'error');
+    return { isOk:false, error:'missing-client-id' };
+  }
+  const result = await window.dsrDrive.connect(clientId);
+  if (!result.isOk && !silent) {
+    const popupHint = result.error === 'popup_closed' || result.error === 'popup-failed' ? ' · กรุณาอนุญาต Popup' : '';
+    showToast('เชื่อมต่อ Google Drive ไม่สำเร็จ' + popupHint, 'error');
+  }
+  dsrUpdateDriveStatus();
+  return result;
+}
+
+async function dsrConnectGoogleDrive() {
+  const result = await dsrEnsureGoogleDriveConnected(false);
+  if (!result.isOk) return result;
+  showToast('เชื่อมต่อ Google Drive แล้ว · กำลังเตรียมโฟลเดอร์โปรเจกต์');
+  let created = 0;
+  const projects = getProjects().filter(function(project) { return !project.drive_folder_id; });
+  for (let i = 0; i < projects.length; i++) {
+    const folder = await ensureProjectDriveFolder(projects[i].project_id, true, false);
+    if (folder && folder.isOk) created++;
+  }
+  dsrUpdateDriveStatus();
+  showToast(created ? 'เชื่อมต่อแล้ว · สร้างโฟลเดอร์ให้ ' + created + ' โปรเจกต์' : 'เชื่อมต่อ Google Drive สำเร็จ');
+  return result;
+}
+
+function dsrDisconnectGoogleDrive() {
+  if (window.dsrDrive) window.dsrDrive.disconnect();
+  dsrUpdateDriveStatus();
+  showToast('ยกเลิกการเชื่อมต่อ Google Drive แล้ว');
+}
+
+function dsrUpdateDriveStatus() {
+  const el = document.getElementById('dsr-drive-status');
+  if (!el) return;
+  const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
+  const hasClientId = !!((cfg && cfg.google_drive_client_id) || (window.dsrDrive && window.dsrDrive.getClientId()));
+  const connected = !!(window.dsrDrive && window.dsrDrive.isConnected());
+  if (connected) {
+    el.innerHTML = '<div class="text-emerald-400 font-semibold">● เชื่อมต่อ Google Drive แล้ว</div><div class="text-slate-500 mt-1">โปรเจกต์ใหม่จะสร้างโฟลเดอร์อัตโนมัติ และไฟล์แนบจะอัปโหลดเข้า Drive โดยตรง</div>';
+  } else if (!hasClientId) {
+    el.innerHTML = '<div class="text-amber-400 font-semibold">ยังไม่พร้อมเชื่อมต่อ</div><div class="text-slate-500 mt-1">เจ้าของระบบต้องใส่ OAuth Client ID ใน “ตั้งค่าสำหรับเจ้าของระบบ” หนึ่งครั้ง</div>';
+  } else {
+    el.innerHTML = '<div class="text-slate-300 font-semibold">ยังไม่ได้เชื่อมต่อบัญชี Drive</div><div class="text-slate-500 mt-1">กดปุ่มด้านล่างแล้วเลือกบัญชี Google ที่ต้องการเก็บไฟล์</div>';
+  }
+  const connectBtn = document.getElementById('dsr-drive-connect-btn');
+  const disconnectBtn = document.getElementById('dsr-drive-disconnect-btn');
+  if (connectBtn) connectBtn.classList.toggle('hidden', connected);
+  if (disconnectBtn) disconnectBtn.classList.toggle('hidden', !connected);
+}
+
 function renderSettings(el) {
   const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
   const googleSyncUrl = window.dataSdk && window.dataSdk.getUrl ? window.dataSdk.getUrl() : '';
@@ -3909,6 +4120,19 @@ function renderSettings(el) {
     '<div class="grid sm:grid-cols-3 gap-2"><button type="button" onclick="dsrSaveGoogleSync()" class="px-3 py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="save" class="w-4 h-4"></i>บันทึกการเชื่อมต่อ</button><button type="button" onclick="dsrTestGoogleSync()" class="px-3 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="plug-zap" class="w-4 h-4"></i>ทดสอบ Google</button><button type="button" onclick="dsrSyncGoogleNow()" class="px-3 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="refresh-cw" class="w-4 h-4"></i>ส่งคิวตอนนี้</button></div>' +
     '<p class="text-[11px] text-slate-500 mt-2">ใช้ URL เดียวกันทุกเครื่องและต้องลงท้ายด้วย /exec · ถ้า URL เดิมเสีย สามารถเปลี่ยนได้โดยคิวในเครื่องจะยังอยู่ครบ</p></div>' +
     '<div class="pt-5 border-t border-slate-700">' +
+    '<div class="flex items-center gap-2 mb-3"><div class="w-7 h-7 rounded-lg bg-blue-600/20 border border-blue-500/30 flex items-center justify-center flex-shrink-0"><i data-lucide="hard-drive" class="w-3.5 h-3.5 text-blue-400"></i></div><h3 class="text-sm font-semibold text-white">Google Drive — เก็บโฟลเดอร์และไฟล์โปรเจกต์</h3></div>' +
+    '<p class="text-xs text-slate-400 mb-3 leading-relaxed">ผู้ใช้กดเชื่อมต่อ เลือกบัญชี Google และอนุญาตได้ทันที ระบบขอสิทธิ์เฉพาะไฟล์และโฟลเดอร์ที่ DSR สร้างเท่านั้น</p>' +
+    '<div id="dsr-drive-status" class="mb-3 px-3 py-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-400">กำลังตรวจสอบ Google Drive…</div>' +
+    '<div class="grid sm:grid-cols-2 gap-2">' +
+      '<button id="dsr-drive-connect-btn" type="button" onclick="dsrConnectGoogleDrive()" class="px-3 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="log-in" class="w-4 h-4"></i>เชื่อมต่อ Google Drive</button>' +
+      '<button id="dsr-drive-disconnect-btn" type="button" onclick="dsrDisconnectGoogleDrive()" class="hidden px-3 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="log-out" class="w-4 h-4"></i>ยกเลิกการเชื่อมต่อ</button>' +
+    '</div>' +
+    '<details class="mt-3 bg-slate-950/60 border border-slate-800 rounded-lg p-3"><summary class="text-xs text-slate-400 cursor-pointer">ตั้งค่าสำหรับเจ้าของระบบ (ทำครั้งเดียว)</summary>' +
+      '<label class="text-[11px] text-slate-500 block mt-3 mb-1">Google OAuth Client ID</label>' +
+      '<input id="dsr-drive-client-id" type="text" spellcheck="false" placeholder="xxxxxxxx.apps.googleusercontent.com" value="' + esc(cfg.google_drive_client_id || defaultConfig.google_drive_client_id || '') + '" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white mono focus:border-blue-500 focus:outline-none">' +
+      '<p class="text-[11px] text-slate-500 mt-2">เพิ่ม Authorized JavaScript origins: https://tarantinosu.github.io และ http://127.0.0.1:8765</p>' +
+    '</details></div>' +
+    '<div class="pt-5 border-t border-slate-700">' +
     '<div class="flex items-center gap-2 mb-3"><div class="w-7 h-7 rounded-lg bg-emerald-600/20 border border-emerald-500/30 flex items-center justify-center flex-shrink-0"><i data-lucide="folder-cog" class="w-3.5 h-3.5 text-emerald-400"></i></div><h3 class="text-sm font-semibold text-white">ตำแหน่งเก็บข้อมูลในเครื่อง</h3></div>' +
     '<p class="text-xs text-slate-400 mb-3 leading-relaxed">เลือกโฟลเดอร์ที่ต้องการ เช่น Documents\\DSR Data ระบบจะบันทึกข้อมูลทั้งหมดลงไฟล์ <span class="mono text-emerald-400">DSR_LIVE_DATA.json</span> อัตโนมัติทุกครั้งที่มีการแก้ไข โดยยังมีฐานข้อมูลสำรองภายในโปรแกรมเพื่อป้องกันข้อมูลสูญหาย</p>' +
     '<div id="dsr-storage-info" class="mb-3 px-3 py-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-400">กำลังตรวจสอบพื้นที่จัดเก็บ…</div>' +
@@ -3927,6 +4151,7 @@ function renderSettings(el) {
     '</form></div></div>';
   if (window.lucide) lucide.createIcons();
   dsrUpdateGoogleSyncInfo();
+  dsrUpdateDriveStatus();
   dsrUpdateStorageInfo();
 }
 
@@ -4158,6 +4383,7 @@ async function saveSettings(e) {
       company_bank_info: cfg.company_bank_info || defaultConfig.company_bank_info,
       company_prepare_name: document.getElementById('set-prepare-name').value,
       company_prepare_title: document.getElementById('set-prepare-title').value,
+      google_drive_client_id: (document.getElementById('dsr-drive-client-id') || {}).value || cfg.google_drive_client_id || '',
       company_logo_data: logoData === null ? getAssetValue('company_logo_data') : logoData,
       company_signature_data: signatureData === null ? getAssetValue('company_signature_data') : signatureData,
       company_stamp_data: stampData === null ? getAssetValue('company_stamp_data') : stampData,
@@ -4165,6 +4391,7 @@ async function saveSettings(e) {
     };
     const result = await window.elementSdk.setConfig(nextConfig);
     if (!result || !result.isOk) throw new Error((result && result.error) || 'บันทึกไม่สำเร็จ');
+    if (window.dsrDrive) window.dsrDrive.configure(nextConfig.google_drive_client_id);
     dsrClearFormDraft(e.currentTarget);
     showToast('บันทึกการตั้งค่าสำเร็จ');
     setTimeout(function() { navigate('dashboard'); }, 1000);
@@ -4396,16 +4623,20 @@ function ensureDSRPrintOverlayStyle() {
   document.head.appendChild(style);
 }
 
+var _dsrPrintReturnTitle = '';
 function closeDSRPrintOverlay() {
   const layer = document.getElementById('dsr-print-layer');
   if (layer) layer.remove();
   document.body.classList.remove('dsr-print-active');
+  if (_dsrPrintReturnTitle) document.title = _dsrPrintReturnTitle;
+  _dsrPrintReturnTitle = '';
 }
 
 function openDSRPrintOverlay(title, fileName, html, autoPrint) {
   if (!html) return false;
   ensureDSRPrintOverlayStyle();
   let layer = document.getElementById('dsr-print-layer');
+  if (!layer) _dsrPrintReturnTitle = document.title;
   if (!layer) {
     layer = document.createElement('div');
     layer.id = 'dsr-print-layer';
@@ -4528,28 +4759,14 @@ function handlePartnerReceiptPrint(ev, refId) {
 }
 
 function previewPartnerReceipt(refId) {
-  const main = document.getElementById('main-content');
-  if (!main) { console.warn('main-content not found'); return false; }
   const form = buildPartnerReceipt(refId);
   if (!form) return false;
   const ctx = getPartnerPaymentContext(refId);
   const fileName = ctx ? makeSafePartnerReceiptName(ctx.sp.partner_name, ctx.paidDate, ctx.inst ? (ctx.inst.inst_index || 0) : null) : 'PR_UNKNOWN';
-  const safeRef = jsQuote(refId);
-  main.innerHTML = `
-    <div class="p-4 fade-in">
-      <div class="flex justify-between items-center mb-4 no-print">
-        <button type="button" class="text-sm text-slate-400 hover:text-white flex items-center gap-1" onclick="navigate('documents')"><i data-lucide="arrow-left" class="w-4 h-4"></i> กลับ</button>
-        <div class="flex gap-2 items-center flex-wrap justify-end">
-          <span class="mono text-xs text-sky-400 self-center">${esc(fileName)}</span>
-          <span class="text-xs text-slate-500 self-center">Partner Receipt · ออกโดยพาร์ทเนอร์ให้บริษัท</span>
-          <button type="button" class="px-4 py-2 bg-sky-700 hover:bg-sky-600 text-white rounded-lg text-sm flex items-center gap-2" onclick="return openPartnerReceiptPrintWindow(${safeRef})"><i data-lucide="external-link" class="w-4 h-4"></i> เปิดหน้าพิมพ์</button>
-          <button type="button" class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="return handlePartnerReceiptPrint(event, ${safeRef})"><i data-lucide="printer" class="w-4 h-4"></i> พิมพ์</button>
-        </div>
-      </div>
-      ${form}
-    </div>`;
+  // Preview on top of the current project instead of replacing main-content.
+  // Closing the preview therefore returns to the same project/tab/scroll position.
+  openDSRPrintOverlay('Partner Receipt / ใบเสร็จพาร์ทเนอร์', fileName, form, false);
   document.title = fileName;
-  if (window.lucide) lucide.createIcons();
   return true;
 }
 
@@ -4574,27 +4791,14 @@ function printPartnerReceipt(refId) {
 
 
 function previewWHT(splitId) {
-  const main = document.getElementById('main-content');
   const form = buildWHTForm(splitId);
   let fileSplit = allData.find(r => r.__backendId === splitId);
   let fileInst = null;
   if (String(splitId).indexOf('pinst:') === 0) { fileInst = allData.find(r => r.__backendId === String(splitId).slice(6)); fileSplit = fileInst ? allData.find(r => r.__backendId === fileInst.split_id) : null; }
   const fileName = fileSplit ? (makeSafeWHTName(fileSplit.partner_name, (fileInst && fileInst.paid_date) || fileSplit.partner_paid_date) + (fileInst ? '_INST' + ((fileInst.inst_index || 0) + 1) : '')) : 'WHT_UNKNOWN';
   if (!form) return false;
-  main.innerHTML = `
-    <div class="p-4 fade-in">
-      <div class="flex justify-between items-center mb-4 no-print">
-        <button class="text-sm text-slate-400 hover:text-white flex items-center gap-1" onclick="navigate('documents')"><i data-lucide="arrow-left" class="w-4 h-4"></i> กลับ</button>
-        <div class="flex gap-2 items-center">
-          <span class="mono text-xs text-red-400 self-center">${fileName}</span>
-          <span class="text-xs text-slate-500 self-center">พรีวิวก่อนปริ้น</span>
-          <button class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="printWHT('${splitId}')"><i data-lucide="printer" class="w-4 h-4"></i> พิมพ์</button>
-        </div>
-      </div>
-      <div id="wht-preview">${form}</div>
-    </div>`;
+  openDSRPrintOverlay('WHT / หนังสือรับรองหัก ณ ที่จ่าย', fileName, form, false);
   document.title = fileName;
-  if (window.lucide) lucide.createIcons();
   return true;
 }
 
@@ -6469,7 +6673,9 @@ function htmlText(v) { return esc(v || '').replace(/\n/g, '<br>'); }
   'addSimpleTimelineItem', 'saveProjectProgress', 'addTimelineItem',
   'editProjectName', 'addPartnerToPie', 'savePartnerInst', 'createQuotation',
   'saveAllocRow', 'saveBOQToProject', 'issueInvoice', 'issueReceipt', 'markPaid',
-  'markProjectDone', 'deleteInstRecord', 'removeSplitFromPie'
+  'payPartnerInst', 'disbursePartner', 'deletePartnerInst', 'deleteSplitRecord',
+  'markProjectDone', 'deleteInstRecord', 'removeSplitFromPie',
+  'saveExtDoc', 'deleteExtDoc'
 ].forEach(function (name) {
   var original = window[name];
   if (typeof original !== 'function') return;

@@ -239,6 +239,11 @@
         } else records = upsert(records, payload);
         setMemory(records);
         try { root.localStorage.setItem('DSR_data', JSON.stringify(records)); } catch (ignore) {}
+        // Keep the app's in-memory model current without forcing a page change.
+        // The page-level handler deliberately avoids re-rendering after the first
+        // load, so forms keep their focus while payment previews can still read
+        // the just-saved status/date immediately.
+        if (handler && typeof handler.onDataChanged === 'function') handler.onDataChanged(clone(records));
         if (typeof options.onSaved === 'function') options.onSaved(action, clone(payload));
         scheduleLiveFolderSave();
         return { isOk: true, __backendId: payload.__backendId, record: clone(payload),

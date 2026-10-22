@@ -10,6 +10,7 @@ Repository: Tarantinosu/dsr-app
 4. เปิดเว็บไซต์ แล้วกด Ctrl+Shift+R หนึ่งครั้งเพื่อรับ Service Worker เวอร์ชันใหม่
 5. ไปที่ ตั้งค่า > Google Sync ใส่ Apps Script URL ที่ลงท้ายด้วย /exec
 6. กด ทดสอบ Google แล้วกด ส่งคิวตอนนี้
+7. ตั้งค่า Google Drive ตามไฟล์ GOOGLE_DRIVE_SETUP_TH.txt แล้วกด “เชื่อมต่อ Google Drive” ในหน้าตั้งค่า
 
 สิ่งที่แก้ในชุดนี้
 - บันทึกข้อมูลลงเครื่องก่อน แล้วส่ง Google เมื่อกด Save
@@ -18,6 +19,9 @@ Repository: Tarantinosu/dsr-app
 - ปุ่มปิดโปรเจกต์จะส่งสถานะ Done ไป Google ทันที หรือเก็บคิวไว้ถ้ายังออฟไลน์
 - เว็บและโปรแกรมจะดึงข้อมูลอีกฝั่งอัตโนมัติเมื่อกลับมาออนไลน์ เปิดหน้าต่าง หรือกลับเข้าแท็บ และตรวจใหม่ทุก 15 วินาที
 - ไม่ดึงข้อมูลใหม่ระหว่างกำลังพิมพ์ จึงลดอาการช่องกรอกเด้งและค้าง
-- Service Worker cache รุ่นใหม่ dsr-hybrid-v9-cross-device-sync
+- เพิ่มปุ่มเชื่อมต่อ Google Drive ด้วยบัญชี Google ของผู้ใช้
+- สร้างโฟลเดอร์ DSR Projects และโฟลเดอร์โปรเจกต์อัตโนมัติ
+- ไฟล์แนบอัปโหลดเข้า Drive โดยตรง ส่วน Sheet เก็บเฉพาะลิงก์และข้อมูลไฟล์
+- Service Worker cache รุ่นใหม่ dsr-hybrid-v12-drive-connect
 
 หมายเหตุ: การอัปเดตไฟล์เว็บไม่ลบข้อมูลใน Google Sheet

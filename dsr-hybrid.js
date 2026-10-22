@@ -393,9 +393,22 @@
 
       if (operation.action === 'create') {
         if (!result.__backendId) return { isOk: false, error: 'missing-id', uncertain: true };
+        var originalLocalId = operation.localId;
         if (result.__backendId !== operation.localId) {
           await local.remapBackendId(operation.localId, result.__backendId);
           await remapQueuedIds(operation.localId, result.__backendId);
+        }
+        // The Apps Script can enrich a newly-created project with its Google
+        // Drive folder ID/URL. Merge that authoritative record back into the
+        // local database immediately so the Drive button appears without a
+        // manual refresh.
+        if (result.record && typeof result.record === 'object') {
+          var enriched = copy(result.record);
+          enriched.__backendId = result.__backendId;
+          await local.update(enriched);
+          if (originalLocalId !== result.__backendId) {
+            await remapQueuedIds(originalLocalId, result.__backendId);
+          }
         }
       }
       return result;

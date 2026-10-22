@@ -1,10 +1,11 @@
 /* DSR+ app shell: keeps the interface available when the network is unavailable. */
-var CACHE_NAME = 'dsr-hybrid-v9-cross-device-sync';
+var CACHE_NAME = 'dsr-hybrid-v12-drive-connect';
 var APP_SHELL = [
   './',
   './index.html',
   './dsr-local.js',
   './dsr-hybrid.js',
+  './dsr-drive.js',
   './manifest.webmanifest',
   './assets/tailwind.css',
   './assets/lucide.min.js',
