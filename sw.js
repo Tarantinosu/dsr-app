@@ -1,5 +1,5 @@
 /* DSR+ app shell: keeps the interface available when the network is unavailable. */
-var CACHE_NAME = 'dsr-hybrid-v13-queue-recovery';
+var CACHE_NAME = 'dsr-web-v17-installments';
 var APP_SHELL = [
   './',
   './index.html',

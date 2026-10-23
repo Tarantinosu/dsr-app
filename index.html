@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#0f172a">
-  <title>DSR+ Offline | DOPIOUS SHARE REVENUE</title>
+  <title>DSR+ Web 2026.10.23 | DOPIOUS SHARE REVENUE</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="assets/tailwind.css">
   <script src="assets/lucide.min.js"></script>
   <script src="assets/xlsx.full.min.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script src="dsr-drive.js?v=20261022-queue-recovery"></script>
+  <script src="dsr-drive.js?v=20261023-web-installments"></script>
   <script src="dsr-local.js?v=20261022-queue-recovery"></script>
   <script src="dsr-hybrid.js?v=20261022-queue-recovery"></script>
   <script>
@@ -1857,10 +1857,10 @@ function renderProjectDetail(el, projId) {
           '<div><h3 class="text-base font-semibold text-white">งวดงาน</h3><div class="text-xs text-slate-500 mt-1">รวมไว้ในหน้าใบเสนอราคาเพื่อดูภาพรวมได้ง่ายขึ้น</div></div>' +
           '<button class="px-3 py-1.5 bg-orange-600 text-white rounded-lg text-xs flex items-center gap-1" onclick="showInstallmentForm(\'' + projId + '\')"><i data-lucide="plus" class="w-3 h-3"></i> เพิ่มงวด</button>' +
         '</div>' +
-        '<div class="mb-4 p-3 bg-slate-800/50 rounded-lg"><div class="flex flex-wrap justify-between gap-2 text-sm"><span class="text-slate-400">Grand Total: <span class="mono text-white">' + fmt(quotation.grand_total||0) + '</span></span>' +
+        '<div id="inst-summary" class="mb-4 p-3 bg-slate-800/50 rounded-lg"><div class="flex flex-wrap justify-between gap-2 text-sm"><span class="text-slate-400">Grand Total: <span class="mono text-white">' + fmt(quotation.grand_total||0) + '</span></span>' +
         (installments.length > 0 ? '<span class="mono ' + (Math.abs(installments.reduce(function(s,i) { return s + (i.amount||0); }, 0) - (quotation.grand_total||0)) > 0.01 ? 'text-red-400' : 'text-emerald-400') + '">รวมทุกงวด: ' + fmt(installments.reduce(function(s,i) { return s + (i.amount||0); }, 0)) + ' / ' + fmt(quotation.grand_total||0) + '</span>' : '<span class="text-slate-500">ยังไม่มีงวดงาน</span>') + '</div></div>' +
         '<div id="inst-form-area"></div>' +
-        '<div class="space-y-2">' +
+        '<div id="inst-list" class="space-y-2">' +
         (installments.length === 0 ? '<p class="text-slate-500 text-sm text-center py-4">ยังไม่มีงวดงาน</p>' : installments.map(function(inst, idx) { return renderInstallmentCard(inst, idx, quotation); }).join('')) +
         '</div>' +
       '</div>' :
@@ -2322,25 +2322,53 @@ function showInstallmentForm(projId) {
   setTimeout(function () { dsrRestoreFormDrafts(); }, 0);
 }
 
+function dsrRenderInstallments(projId) {
+  const q = getQuotation(projId);
+  const list = document.getElementById('inst-list');
+  const summary = document.getElementById('inst-summary');
+  if (!q || !list || !summary) return;
+  const installments = getInstallments(projId);
+  const total = installments.reduce(function(sum, inst) { return sum + (inst.amount || 0); }, 0);
+  list.innerHTML = installments.length ? installments.map(function(inst, idx) { return renderInstallmentCard(inst, idx, q); }).join('') : '<p class="text-slate-500 text-sm text-center py-4">ยังไม่มีงวดงาน</p>';
+  summary.innerHTML = '<div class="flex flex-wrap justify-between gap-2 text-sm"><span class="text-slate-400">Grand Total: <span class="mono text-white">' + fmt(q.grand_total || 0) + '</span></span>' + (installments.length ? '<span class="mono ' + (Math.abs(total - (q.grand_total || 0)) > 0.01 ? 'text-red-400' : 'text-emerald-400') + '">รวมทุกงวด: ' + fmt(total) + ' / ' + fmt(q.grand_total || 0) + '</span>' : '<span class="text-slate-500">ยังไม่มีงวดงาน</span>') + '</div>';
+  if (window.lucide) lucide.createIcons();
+}
+
 async function saveInstallment(e, projId) {
   e.preventDefault();
   const q = getQuotation(projId);
   if (!q) { showToast('ไม่พบใบเสนอราคา', 'error'); return; }
   const btn = document.getElementById('inst-submit');
+  if (!btn || btn.disabled) return;
+  const form = btn.form;
+  const page = currentPage, context = window._navCtx, editVersion = _dsrEditVersion;
   btn.disabled = true; btn.textContent = '...';
-  const type = document.getElementById('inst-type').value;
-  const val = parseFloat(document.getElementById('inst-val').value) || 0;
-  const amount = type === 'percent' ? roundHU((q.grand_total||0) * val / 100) : roundHU(val);
-  const result = await window.dataSdk.create({
-    record_type: 'installment', project_id: projId,
-    installment_index: getInstallments(projId).length,
-    split_type: type, split_value: val, amount: amount,
-    due_date: document.getElementById('inst-due').value || '',
-    installment_condition: document.getElementById('inst-condition').value.trim(),
-    status: 'draft', created_at: new Date().toISOString()
-  });
-  if (result.isOk) showToast('เพิ่มงวดงานสำเร็จ');
-  else { showToast('เกิดข้อผิดพลาด', 'error'); btn.disabled = false; btn.textContent = 'เพิ่ม'; }
+  try {
+    const type = document.getElementById('inst-type').value;
+    const val = parseFloat(document.getElementById('inst-val').value) || 0;
+    if (val <= 0) throw new Error('กรุณาระบุจำนวนงวดมากกว่า 0');
+    const amount = type === 'percent' ? roundHU((q.grand_total||0) * val / 100) : roundHU(val);
+    const result = await window.dataSdk.create({
+      record_type: 'installment', project_id: projId,
+      installment_index: getInstallments(projId).length,
+      split_type: type, split_value: val, amount: amount,
+      due_date: document.getElementById('inst-due').value || '',
+      installment_condition: document.getElementById('inst-condition').value.trim(),
+      status: 'draft', created_at: new Date().toISOString()
+    });
+    if (!result || !result.isOk) throw new Error('บันทึกงวดงานไม่สำเร็จ');
+    dsrClearFormDraft(form);
+    const area = document.getElementById('inst-form-area');
+    if (page === currentPage && context === window._navCtx && editVersion === _dsrEditVersion && area && area.contains(btn)) {
+      area.innerHTML = '';
+      dsrRenderInstallments(projId);
+    }
+    showToast('เพิ่มงวดในเบราว์เซอร์แล้ว · ตรวจสถานะส่ง Google ที่แถบด้านบน');
+  } catch (error) {
+    showToast(error.message || 'เพิ่มงวดไม่สำเร็จ กรุณาลองใหม่', 'error');
+  } finally {
+    if (btn.isConnected) { btn.disabled = false; btn.textContent = 'เพิ่ม'; }
+  }
 }
 
 function renderInstallmentCard(inst, idx, q) {
@@ -6684,6 +6712,13 @@ function htmlText(v) { return esc(v || '').replace(/\n/g, '<br>'); }
     var saved = window._dsrSavedVersion || 0, failed = window._dsrFailedVersion || 0;
     var result = await original.apply(this, arguments);
     var didSave = (window._dsrSavedVersion || 0) > saved && (window._dsrFailedVersion || 0) === failed;
+    if (didSave && name !== 'saveInstallment' &&
+        page === currentPage && context === window._navCtx && editVersion === _dsrEditVersion &&
+        !window.dataSdk.isBusy() && !Object.values(_qt).some(function (st) { return !!st.debounce; })) {
+      var main = document.getElementById('main-content'), scroll = main.scrollTop;
+      renderPage();
+      main.scrollTop = scroll;
+    }
     if (didSave && window.dataSdk.flushGoogle && window.dataSdk.getSyncInfo) {
       var syncInfo = await window.dataSdk.getSyncInfo();
       if (syncInfo && syncInfo.enabled && syncInfo.configured && syncInfo.pending) {
@@ -6691,15 +6726,13 @@ function htmlText(v) { return esc(v || '').replace(/\n/g, '<br>'); }
         if (!syncResult || !syncResult.isOk) {
           var failedInfo = await window.dataSdk.getSyncInfo();
           showToast('ข้อมูลไม่หาย · ' + ((failedInfo && failedInfo.error) || 'รอส่ง Google'), 'error');
+        } else if (name === 'saveInstallment') {
+          var completedInfo = await window.dataSdk.getSyncInfo();
+          if (completedInfo && !completedInfo.pending && !completedInfo.error) showToast('ส่งงวดขึ้น Google แล้ว');
         }
+      } else if (name === 'saveInstallment' && (!syncInfo || !syncInfo.enabled || !syncInfo.configured)) {
+        showToast('งวดอยู่ในเบราว์เซอร์เท่านั้น · กรุณาตั้งค่าและเปิด Google Sync', 'error');
       }
-    }
-    if (didSave &&
-        page === currentPage && context === window._navCtx && editVersion === _dsrEditVersion &&
-        !window.dataSdk.isBusy() && !Object.values(_qt).some(function (st) { return !!st.debounce; })) {
-      var main = document.getElementById('main-content'), scroll = main.scrollTop;
-      renderPage();
-      main.scrollTop = scroll;
     }
     return result;
   };
