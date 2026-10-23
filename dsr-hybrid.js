@@ -383,6 +383,7 @@
         var createResult = await apiRequest({ action: 'create', record: recreated });
         if (!createResult.isOk) return createResult;
         if (!createResult.__backendId) return { isOk: false, error: 'missing-id', uncertain: true };
+        if (options.onRemap) options.onRemap(operation.localId, createResult.__backendId);
         await local.remapBackendId(operation.localId, createResult.__backendId);
         await remapQueuedIds(operation.localId, createResult.__backendId);
         createResult.recreated = true;
@@ -395,6 +396,7 @@
         if (!result.__backendId) return { isOk: false, error: 'missing-id', uncertain: true };
         var originalLocalId = operation.localId;
         if (result.__backendId !== operation.localId) {
+          if (options.onRemap) options.onRemap(operation.localId, result.__backendId);
           await local.remapBackendId(operation.localId, result.__backendId);
           await remapQueuedIds(operation.localId, result.__backendId);
         }
@@ -538,6 +540,7 @@
           released++;
           continue;
         }
+        if (options.onRemap) options.onRemap(operation.localId, serverRecord.__backendId);
         await local.remapBackendId(operation.localId, serverRecord.__backendId);
         await remapQueuedIds(operation.localId, serverRecord.__backendId);
         await deleteOperation(operation.seq);
@@ -563,7 +566,7 @@
           return result;
         }
         await reconcileUncertainCreates(result.records);
-        await queueLocalOnlyRecords(result.records);
+        // Unsent local records are submitted only by an explicit Save.
         var operations = await listOperations();
         var merged = applyOperations(result.records, operations);
         await local.replaceFromSync(merged);

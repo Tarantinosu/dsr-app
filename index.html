@@ -4,15 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#0f172a">
-  <title>DSR+ Web 2026.10.23 | DOPIOUS SHARE REVENUE</title>
+  <title>DSR+ Web 2026.10.23 Manual Save | DOPIOUS SHARE REVENUE</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="assets/tailwind.css">
   <script src="assets/lucide.min.js"></script>
   <script src="assets/xlsx.full.min.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="dsr-drive.js?v=20261023-web-installments"></script>
-  <script src="dsr-local.js?v=20261022-queue-recovery"></script>
-  <script src="dsr-hybrid.js?v=20261022-queue-recovery"></script>
+  <script src="dsr-local.js?v=20261023-manual-save"></script>
+  <script src="dsr-hybrid.js?v=20261023-manual-save"></script>
+  <script src="dsr-manual.js?v=20261023-manual-save"></script>
   <script>
 // ===== OFFLINE SDK — data stays on this computer =====
 (function () {
@@ -69,7 +70,7 @@
 
   // Writes commit to IndexedDB immediately. Google Apps Script synchronization runs in the background.
   if (!window.dataSdk) {
-    window.dataSdk = createDSRHybrid({
+    window.dataSdk = createDSRManual(createDSRHybrid, {
       fetch: window.fetch.bind(window),
       storage: window.localStorage,
       getRecords: function () { return allData; },
@@ -79,6 +80,11 @@
       onSaved: function (action, record) {
         window._dsrSavedVersion = (window._dsrSavedVersion || 0) + 1;
         if (action === 'delete' || (action === 'update' && record.record_type !== 'quotation' && record.record_type !== 'config')) dsrRenderActionWhenIdle();
+      },
+      onDraftStatus: function () { dsrShowSyncStatus(_dsrLastSyncState || {}); },
+      onStaged: function (action, record) {
+        window._dsrSavedVersion = (window._dsrSavedVersion || 0) + 1;
+        if (action !== 'update' || !(document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName))) dsrRenderDraftChange(record);
       },
       onFailure: function () { window._dsrFailedVersion = (window._dsrFailedVersion || 0) + 1; }
     });
@@ -288,6 +294,8 @@ html,body{height:100%;margin:0}
     </nav>
     <div class="no-print" style="padding:12px;border-top:1px solid #292929;font-size:12px">
       <div id="dsr-save-status" role="status" aria-live="polite" style="margin-bottom:8px;color:#94a3b8">กำลังโหลดข้อมูล…</div>
+      <button id="dsr-save-all" type="button" onclick="dsrSaveAll()" style="padding:8px 10px;margin-bottom:8px;background:#ea580c;color:white;border-radius:6px;width:100%">บันทึกทั้งหมด / ส่ง Google</button>
+      <div style="font-size:11px;color:#94a3b8;margin-bottom:8px">เพิ่ม/แก้/ลบเป็นฉบับร่างจนกดบันทึก · ปิดหรือรีโหลดก่อนบันทึก ฉบับร่างจะหาย</div>
       <button id="dsr-refresh-button" type="button" onclick="dsrRequestRefresh()" style="padding:6px 10px;border:1px solid #444;border-radius:6px">↻ ซิงก์ข้อมูล</button>
       <button id="dsr-retry-save" type="button" hidden onclick="dsrRetryGoogleSync()" style="padding:6px 10px;color:#fbbf24">ลองส่ง Google อีกครั้ง</button>
     </div>
@@ -724,7 +732,7 @@ async function saveProfile(e) {
 }
 
 async function deleteProfile(id) {
-  const rec = allData.find(r => r.__backendId === id);
+  const rec = allData.find(r => r.__backendId === dsrResolveRecordId(id));
   if (!rec) return;
   showConfirm('ลบ "' + rec.name + '" ?', async function() {
     const r = await window.dataSdk.delete(rec);
@@ -733,7 +741,7 @@ async function deleteProfile(id) {
 }
 
 function editProfile(id) {
-  const p = allData.find(r => r.__backendId === id);
+  const p = allData.find(r => r.__backendId === dsrResolveRecordId(id));
   if (!p) return;
   document.getElementById('profile-form-area').innerHTML = '<div class="bg-slate-900 border border-blue-800 rounded-xl p-4 mb-4 fade-in">' +
     '<div class="text-sm font-semibold text-white mb-3">แก้ไขข้อมูล</div>' +
@@ -760,7 +768,7 @@ async function updateProfile(e, id) {
   dsrCancelLiveAutosave('profile:' + id);
   const btn = document.getElementById('pf-submit');
   btn.disabled = true; btn.textContent = 'กำลังบันทึก...';
-  const rec = allData.find(r => r.__backendId === id);
+  const rec = allData.find(r => r.__backendId === dsrResolveRecordId(id));
   if (!rec) return;
   Object.assign(rec, {
     role: document.getElementById('pf-role').value,
@@ -935,7 +943,7 @@ async function saveProject(e) {
   if (result.isOk) {
     showToast('สร้างโปรเจกต์สำเร็จ');
     await addLog(pid, 'สร้างโปรเจกต์', document.getElementById('proj-name').value);
-    if (window.dsrDrive && window.dsrDrive.isConnected()) {
+    if (!result.isDraft && window.dsrDrive && window.dsrDrive.isConnected()) {
       await ensureProjectDriveFolder(pid, true, false);
     }
   }
@@ -1159,21 +1167,7 @@ async function markProjectDone(projId, e) {
     }
 
     await addLog(projId, 'เปลี่ยนสถานะ', 'Done');
-    var syncResult = window.dataSdk.flushGoogle
-      ? await window.dataSdk.flushGoogle()
-      : { isOk: false, error: 'not-supported' };
-
-    if (syncResult && syncResult.isOk) {
-      showToast('✅ ปิดโปรเจกต์และซิงก์ Google แล้ว');
-      return;
-    }
-
-    var syncInfo = window.dataSdk.getSyncInfo ? await window.dataSdk.getSyncInfo() : null;
-    if (syncInfo && syncInfo.enabled && syncInfo.configured) {
-      showToast('ปิดโปรเจกต์ในเครื่องแล้ว · รอส่ง Google (' + (syncInfo.pending || 1) + ')', 'error');
-    } else {
-      showToast('ปิดโปรเจกต์ในเครื่องแล้ว · ยังไม่ได้เปิด Google Sync');
-    }
+    showToast('เปลี่ยนสถานะในฉบับร่างแล้ว · กดบันทึกทั้งหมดเพื่อส่ง Google');
   });
 }
 
@@ -1296,7 +1290,7 @@ function renderProjectBOQSummary(projId, quotationId) {
 }
 function openBOQAiPanel(projId, quotationId) {
   var project = allData.find(function(r){ return r.record_type === 'project' && r.project_id === projId; });
-  var q = quotationId ? allData.find(function(r){ return r.__backendId === quotationId; }) : getQuotation(projId);
+  var q = quotationId ? allData.find(function(r){ return r.__backendId === dsrResolveRecordId(quotationId); }) : getQuotation(projId);
   _boqAI = {
     projectId: projId,
     quotationId: q ? q.__backendId : '',
@@ -1990,12 +1984,12 @@ function _qtSave(qId) {
     subtotal: c.sub, vat_amount: c.vat, client_wht_amount: c.wht, grand_total: c.tot
   });
   st.q = updated;
-  var index = allData.findIndex(function (record) { return record.__backendId === qId; });
+  var index = allData.findIndex(function (record) { return record.__backendId === dsrResolveRecordId(qId); });
   if (index >= 0) allData[index] = updated;
   st.dirty = true;
   dsrMarkManualPending(qId);
   var stateLabel = document.getElementById('qt-local-state-' + qId);
-  if (stateLabel) stateLabel.textContent = 'แก้ไขในเครื่องแล้ว · ยังไม่ส่ง Google';
+  if (stateLabel) stateLabel.textContent = 'แก้ไขบนหน้าจอแล้ว · ยังไม่บันทึก';
   st.debounce = setTimeout(function () {
     st.debounce = null;
     // Keystrokes save to IndexedDB only. Google is contacted by the Save button.
@@ -2127,7 +2121,7 @@ function renderQuotationEditor(q, items, locked, projId) {
         '<option value="5"'+((q.client_wht_rate||0)===5?' selected':'')+'>5%</option></select></div>'+
       '</div></div>'+
     (!locked?'<div class="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border border-orange-500/40 bg-orange-950/20 p-3">'+
-      '<div><div id="qt-local-state-'+qId+'" class="text-xs font-semibold text-orange-300">'+(_dsrManualPending.has(qId)?'แก้ไขในเครื่องแล้ว · ยังไม่ส่ง Google':'พร้อมแก้ไขแบบ Offline')+'</div><div class="text-[11px] text-slate-500 mt-0.5">ระหว่างพิมพ์จะไม่เรียก Google Script</div></div>'+
+      '<div><div id="qt-local-state-'+qId+'" class="text-xs font-semibold text-orange-300">'+(_dsrManualPending.has(qId)?'แก้ไขบนหน้าจอแล้ว · ยังไม่บันทึก':'พร้อมแก้ไขแบบ Offline')+'</div><div class="text-[11px] text-slate-500 mt-0.5">ระหว่างพิมพ์จะไม่เรียก Google Script</div></div>'+
       '<button type="button" id="qt-save-'+qId+'" class="min-h-[42px] px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm font-semibold flex items-center justify-center gap-2" onclick="saveQuotationToGoogle(\''+qId+'\',this)"><i data-lucide="save" class="w-4 h-4"></i> Save ไป Google</button></div>':'')+
     metaCard+
     '<div class="mb-4 pb-4 border-b border-slate-700">'+
@@ -2160,16 +2154,16 @@ function renderQuotationEditor(q, items, locked, projId) {
 }
 
 async function updateQuotationMeta(qId, field, value) {
-  var q = allData.find(function(r){return r.__backendId===qId;});
+  var q = allData.find(function(r){return r.__backendId===dsrResolveRecordId(qId);});
   if (!q) return;
   var updated = Object.assign({}, q); updated[field] = value;
-  var i = allData.findIndex(function(d){return d.__backendId===qId;}); if(i>=0) allData[i]=updated;
+  var i = allData.findIndex(function(d){return d.__backendId===dsrResolveRecordId(qId);}); if(i>=0) allData[i]=updated;
   if (_qt[qId]) { _qt[qId].q = updated; _qt[qId].dirty = true; }
   dsrMarkManualPending(qId);
   var writer = window.dataSdk.updateLocal || window.dataSdk.update;
   await writer.call(window.dataSdk, updated);
   var stateLabel = document.getElementById('qt-local-state-' + qId);
-  if (stateLabel) stateLabel.textContent = 'แก้ไขในเครื่องแล้ว · ยังไม่ส่ง Google';
+  if (stateLabel) stateLabel.textContent = 'แก้ไขบนหน้าจอแล้ว · ยังไม่บันทึก';
 }
 
 async function saveQuotationToGoogle(qId, button) {
@@ -2213,7 +2207,7 @@ async function createQuotation(projId) {
 }
 
 async function updateVATMode(qId, mode) {
-  const q = allData.find(r => r.__backendId === qId);
+  const q = allData.find(r => r.__backendId === dsrResolveRecordId(qId));
   if (!q) return;
   q.vat_mode = mode;
   await recalcQuotation(q, _qt[qId] ? _qt[qId].items : safeParseJSON(q.items_json), 'local');
@@ -2222,7 +2216,7 @@ async function updateVATMode(qId, mode) {
 }
 
 async function updateClientWHT(qId, rate) {
-  const q = allData.find(r => r.__backendId === qId);
+  const q = allData.find(r => r.__backendId === dsrResolveRecordId(qId));
   if (!q) return;
   q.client_wht_rate = parseFloat(rate) || 0;
   await recalcQuotation(q, _qt[qId] ? _qt[qId].items : safeParseJSON(q.items_json), 'local');
@@ -2363,7 +2357,7 @@ async function saveInstallment(e, projId) {
       area.innerHTML = '';
       dsrRenderInstallments(projId);
     }
-    showToast('เพิ่มงวดในเบราว์เซอร์แล้ว · ตรวจสถานะส่ง Google ที่แถบด้านบน');
+    showToast('เพิ่มงวดในฉบับร่างแล้ว · กดบันทึกทั้งหมดเพื่อส่ง Google');
   } catch (error) {
     showToast(error.message || 'เพิ่มงวดไม่สำเร็จ กรุณาลองใหม่', 'error');
   } finally {
@@ -2395,7 +2389,7 @@ function renderInstallmentCard(inst, idx, q) {
 }
 
 async function updateInstallmentCondition(id, value) {
-  const inst = allData.find(r => r.__backendId === id);
+  const inst = allData.find(r => r.__backendId === dsrResolveRecordId(id));
   if (!inst || (inst.installment_condition||'') === value.trim()) return;
   const result = await window.dataSdk.update(Object.assign({}, inst, { installment_condition: value.trim() }));
   if (result.isOk) showToast('บันทึก Condition แล้ว');
@@ -2403,7 +2397,7 @@ async function updateInstallmentCondition(id, value) {
 }
 
 async function issueInvoice(id) {
-  const inst = allData.find(r => r.__backendId === id);
+  const inst = allData.find(r => r.__backendId === dsrResolveRecordId(id));
   if (!inst) return;
   const invNum = nextDocNum('INV');
   showDateConfirm('ออก Invoice ' + invNum + '\n' + fmt(inst.amount||0) + ' บาท\n\nเลือกวันที่ Invoice (ย้อนหลัง/ล่วงหน้าได้)', 'ออก Invoice', 'bg-amber-600 hover:bg-amber-500', async function(dateISO) {
@@ -2414,7 +2408,7 @@ async function issueInvoice(id) {
 }
 
 async function issueReceipt(id) {
-  const inst = allData.find(r => r.__backendId === id);
+  const inst = allData.find(r => r.__backendId === dsrResolveRecordId(id));
   if (!inst) return;
   const recNum = nextDocNum('REC');
   showDateConfirm('ออกใบเสร็จ ' + recNum + '\n' + fmt(inst.amount||0) + ' บาท\n\nเลือกวันที่ใบเสร็จ (ย้อนหลัง/ล่วงหน้าได้)', 'ออกใบเสร็จ', 'bg-emerald-600 hover:bg-emerald-500', async function(dateISO) {
@@ -2425,7 +2419,7 @@ async function issueReceipt(id) {
 }
 
 async function markPaid(id) {
-  const inst = allData.find(r => r.__backendId === id);
+  const inst = allData.find(r => r.__backendId === dsrResolveRecordId(id));
   if (!inst) return;
   showDateConfirm('บันทึกชำระเงิน งวดที่ ' + ((inst.installment_index||0)+1) + '\n' + fmt(inst.amount||0) + ' บาท\n\nเลือกวันที่ชำระ (ย้อนหลัง/ล่วงหน้าได้)', 'บันทึกชำระ', 'bg-orange-600 hover:bg-orange-500', async function(dateISO) {
     await window.dataSdk.update(Object.assign({}, inst, { status: 'paid', paid_date: dateISO }));
@@ -2435,7 +2429,7 @@ async function markPaid(id) {
 }
 
 async function deleteInstRecord(id) {
-  const rec = allData.find(r => r.__backendId === id);
+  const rec = allData.find(r => r.__backendId === dsrResolveRecordId(id));
   if (!rec) return;
   const installmentNo = (rec.installment_index || 0) + 1;
   const isPaid = rec.status === 'paid';
@@ -2675,7 +2669,7 @@ function onAllocSlideDraft(splitId, profitBase, whtRate, vatEnabled, vatRate, va
 async function _applyAllocChange(splitId, projId, profitBase, newPct, lockCurrent) {
   newPct = Math.max(0, Math.min(100, roundPct(newPct)));
   const splits = getPartnerSplits(projId);
-  const thisSp = splits.find(s => s.__backendId === splitId);
+  const thisSp = splits.find(s => s.__backendId === dsrResolveRecordId(splitId));
   if (!thisSp) return;
   const lockedTotal = splits.filter(s => s.__backendId !== splitId && s.share_locked).reduce(function(sum,s) { return sum + (s.partner_share_value||0); }, 0);
   const maxAllowed = roundPct(100 - lockedTotal);
@@ -2762,7 +2756,7 @@ async function saveAllocRow(splitId, projId, profitBase, button) {
 }
 
 async function toggleAllocLock(splitId, projId, profitBase, button) {
-  const sp = allData.find(r => r.__backendId === splitId);
+  const sp = allData.find(r => r.__backendId === dsrResolveRecordId(splitId));
   if (!sp) return;
   if (button) button.disabled = true;
   const nextLocked = !sp.share_locked;
@@ -2779,7 +2773,7 @@ async function toggleAllocLock(splitId, projId, profitBase, button) {
 }
 
 async function removeSplitFromPie(splitId, projId, profitBase) {
-  const sp = allData.find(r => r.__backendId === splitId);
+  const sp = allData.find(r => r.__backendId === dsrResolveRecordId(splitId));
   if (!sp) return;
   showConfirm('ลบ ' + sp.partner_name + ' ออกจากการแบ่งกำไร?', async function() {
     const result = await window.dataSdk.delete(sp);
@@ -2877,7 +2871,7 @@ function clearPartnerInstForm(splitId) {
 }
 
 function showPartnerInstForm(splitId) {
-  const sp = allData.find(r => r.__backendId === splitId);
+  const sp = allData.find(r => r.__backendId === dsrResolveRecordId(splitId));
   if (!sp) return;
   const expenses = byType('project_expense').filter(e => e.partner_split_id === splitId && e.deduct_from_partner);
   const totalExp = expenses.reduce((s,e) => s + (e.expense_amount||0), 0);
@@ -2939,7 +2933,7 @@ async function savePartnerInst(splitId) {
   const amtEl = document.getElementById('pinst-amt-' + splitId);
   const pctEl = document.getElementById('pinst-pct-' + splitId);
   const noteEl = document.getElementById('pinst-note-' + splitId);
-  const sp = allData.find(r => r.__backendId === splitId);
+  const sp = allData.find(r => r.__backendId === dsrResolveRecordId(splitId));
   if (!sp) return;
   const expenses = byType('project_expense').filter(e => e.partner_split_id === splitId && e.deduct_from_partner);
   const totalExp = expenses.reduce((s,e) => s + (e.expense_amount||0), 0);
@@ -2984,7 +2978,7 @@ async function savePartnerInst(splitId) {
 }
 
 async function payPartnerInst(instId) {
-  const inst = allData.find(r => r.__backendId === instId);
+  const inst = allData.find(r => r.__backendId === dsrResolveRecordId(instId));
   if (!inst) return;
   const sp = allData.find(r => r.__backendId === inst.split_id);
   const instWhtRate = inst.wht_rate || (sp ? (sp.partner_wht_rate || 3) : 3);
@@ -2998,7 +2992,7 @@ async function payPartnerInst(instId) {
   showDateConfirm('จ่ายเงินพาร์ทเนอร์ งวดที่ ' + ((inst.inst_index||0)+1) + '\nยอดก่อนหัก: ' + fmt(inst.amount) + ' บาท' + vatLine + '\nWHT ' + instWhtRate + '%: -' + fmt(instWhtAmount) + ' บาท\nสุทธิที่จ่าย: ' + fmt(instNetAmount) + ' บาท' + (inst.note ? '\nหมายเหตุ: ' + inst.note : '') + '\n\nเลือกวันที่จ่าย (ย้อนหลัง/ล่วงหน้าได้)', 'ยืนยันจ่าย', 'bg-purple-600 hover:bg-purple-500', async function(dateISO) {
     await window.dataSdk.update(Object.assign({}, inst, { paid: true, paid_date: dateISO, vat_enabled: instVatEnabled, vat_rate: instVatRate, vat_amount: instVatAmount, wht_rate: instWhtRate, wht_amount: instWhtAmount, net_amount: instNetAmount }));
     const allInsts = getPartnerInsts(inst.split_id);
-    const allPaid = allInsts.every(i => i.__backendId === instId ? true : i.paid);
+    const allPaid = allInsts.every(i => i.__backendId === dsrResolveRecordId(instId) ? true : i.paid);
     if (allPaid && allInsts.length > 0) {
       await window.dataSdk.update(Object.assign({}, sp, { partner_paid: true, partner_paid_date: dateISO }));
     }
@@ -3009,7 +3003,7 @@ async function payPartnerInst(instId) {
 }
 
 async function deletePartnerInst(instId) {
-  const inst = allData.find(r => r.__backendId === instId);
+  const inst = allData.find(r => r.__backendId === dsrResolveRecordId(instId));
   if (!inst) return;
   const sp = allData.find(r => r.__backendId === inst.split_id);
   const prompt = inst.paid
@@ -3027,7 +3021,7 @@ async function deletePartnerInst(instId) {
 }
 
 async function disbursePartner(id) {
-  const sp = allData.find(r => r.__backendId === id);
+  const sp = allData.find(r => r.__backendId === dsrResolveRecordId(id));
   if (!sp) return;
   const expenses = byType('project_expense').filter(function(e) { return e.partner_split_id === id && e.deduct_from_partner; });
   const totalExp = expenses.reduce(function(s,e) { return s + (e.expense_amount||0); }, 0);
@@ -3041,7 +3035,7 @@ async function disbursePartner(id) {
 }
 
 async function deleteSplitRecord(id) {
-  const rec = allData.find(r => r.__backendId === id);
+  const rec = allData.find(r => r.__backendId === dsrResolveRecordId(id));
   if (!rec) return;
   const partnerInsts = getPartnerInsts(id);
   const hasPaidData = !!rec.partner_paid || partnerInsts.some(function(inst) { return !!inst.paid; });
@@ -3505,7 +3499,7 @@ async function saveExtDoc(projId) {
 }
 
 function viewExtDoc(extId) {
-  const rec = allData.find(function(r){ return r.__backendId === extId; });
+  const rec = allData.find(function(r){ return r.__backendId === dsrResolveRecordId(extId); });
   if (!rec) return;
   if (rec.drive_file_url) {
     window.open(rec.drive_file_url, '_blank', 'noopener');
@@ -3531,18 +3525,9 @@ function viewExtDoc(extId) {
 }
 
 async function deleteExtDoc(extId) {
-  const rec = allData.find(function(r){ return r.__backendId === extId; });
+  const rec = allData.find(function(r){ return r.__backendId === dsrResolveRecordId(extId); });
   if (!rec) return;
-  showConfirm('ลบเอกสาร "' + (rec.ext_doc_name||'เอกสาร') + '" ?\n\nไฟล์ใน Google Drive จะถูกย้ายไปถังขยะด้วย', async function() {
-    if (rec.drive_file_id) {
-      const connected = await dsrEnsureGoogleDriveConnected();
-      if (!connected.isOk) return;
-      const driveDeleted = await window.dsrDrive.deleteFile(rec.drive_file_id);
-      if (!driveDeleted.isOk) {
-        showToast('ลบไฟล์ใน Drive ไม่สำเร็จ · ยังไม่ได้ลบรายการ', 'error');
-        return;
-      }
-    }
+  showConfirm('ลบเอกสาร "' + (rec.ext_doc_name||'เอกสาร') + '" ?\n\nรายการจะถูกลบเมื่อกดบันทึกทั้งหมด · ไฟล์ใน Google Drive ยังอยู่', async function() {
     const r = await window.dataSdk.delete(rec);
     if (r.isOk) { showToast('ลบแล้ว'); renderDocuments(document.getElementById('main-content')); }
     else showToast('เกิดข้อผิดพลาด', 'error');
@@ -4013,7 +3998,7 @@ function viewExpenseDoc(expId) {
 }
 
 async function deleteExpense(id, projId) {
-  const rec = allData.find(r => r.__backendId === id);
+  const rec = allData.find(r => r.__backendId === dsrResolveRecordId(id));
   if (!rec) return;
   const wasGeneral = !rec.deduct_from_partner;
   showConfirm('ลบค่าใช้จ่ายนี้?', async function() {
@@ -4140,7 +4125,7 @@ function renderSettings(el) {
     '</div><p class="text-xs text-slate-500 mt-3">รูปจะไปแสดงบน Quotation, Invoice/Billing Note และ Receipt | Tax invoice และ QR payment จะขึ้นในเอกสารตรงตำแหน่งชำระเงิน</p></div>' +
     '<div class="pt-5 border-t border-slate-700">' +
     '<div class="flex items-center gap-2 mb-3"><div class="w-7 h-7 rounded-lg bg-sky-600/20 border border-sky-500/30 flex items-center justify-center flex-shrink-0"><i data-lucide="cloud-cog" class="w-3.5 h-3.5 text-sky-400"></i></div><h3 class="text-sm font-semibold text-white">Google Sync — ใช้ร่วมกันบนคอมและโทรศัพท์</h3></div>' +
-    '<p class="text-xs text-slate-400 mb-3 leading-relaxed">ระบบบันทึกลงเครื่องก่อนทันที แล้วค่อยส่งคิวไป Google Apps Script เบื้องหลัง จึงกดใช้งานต่อได้โดยไม่ต้องรอ Google Sheet และเมื่อเน็ตหลุดรายการจะรอซิงก์ไว้</p>' +
+    '<p class="text-xs text-slate-400 mb-3 leading-relaxed">แก้ เพิ่ม หรือลบเป็นฉบับร่างบนหน้าจอก่อน ยังไม่เขียนฐานข้อมูลหรือเข้าคิว Google จนกด “บันทึกทั้งหมด / ส่ง Google” · ถ้าปิดหรือรีโหลดก่อนบันทึก ฉบับร่างจะหาย</p>' +
     '<label class="text-xs text-slate-400 block mb-1.5">Apps Script Web App URL</label>' +
     '<input id="dsr-google-url" type="url" inputmode="url" spellcheck="false" placeholder="https://script.google.com/macros/s/.../exec" value="' + esc(googleSyncUrl) + '" class="w-full px-3 py-2.5 bg-slate-950 border border-slate-700 rounded-lg text-xs text-white mono focus:border-sky-500 focus:outline-none">' +
     '<label class="mt-3 flex items-center gap-2 text-xs text-slate-300 cursor-pointer"><input id="dsr-google-enabled" type="checkbox" class="accent-sky-500" ' + (googleSyncEnabled ? 'checked' : '') + '><span>เปิดซิงก์ Google อัตโนมัติ</span></label>' +
@@ -4194,7 +4179,7 @@ async function dsrUpdateGoogleSyncInfo() {
       return;
     }
     if (!info.enabled) {
-      el.innerHTML = '<div class="text-slate-300 font-semibold mb-1">Google Sync ปิดอยู่</div><div>ข้อมูลยังบันทึกในเครื่องตามปกติ · คิวเดิมยังถูกเก็บไว้</div>';
+      el.innerHTML = '<div class="text-slate-300 font-semibold mb-1">Google Sync ปิดอยู่</div><div>กดบันทึกเพื่อเก็บข้อมูลในเบราว์เซอร์ · คิวที่เคยบันทึกแล้วยังอยู่</div>';
       return;
     }
     var last = info.lastSyncAt ? new Date(info.lastSyncAt).toLocaleString('th-TH') : 'ยังไม่เคยซิงก์';
@@ -4820,7 +4805,7 @@ function printPartnerReceipt(refId) {
 
 function previewWHT(splitId) {
   const form = buildWHTForm(splitId);
-  let fileSplit = allData.find(r => r.__backendId === splitId);
+  let fileSplit = allData.find(r => r.__backendId === dsrResolveRecordId(splitId));
   let fileInst = null;
   if (String(splitId).indexOf('pinst:') === 0) { fileInst = allData.find(r => r.__backendId === String(splitId).slice(6)); fileSplit = fileInst ? allData.find(r => r.__backendId === fileInst.split_id) : null; }
   const fileName = fileSplit ? (makeSafeWHTName(fileSplit.partner_name, (fileInst && fileInst.paid_date) || fileSplit.partner_paid_date) + (fileInst ? '_INST' + ((fileInst.inst_index || 0) + 1) : '')) : 'WHT_UNKNOWN';
@@ -4832,7 +4817,7 @@ function previewWHT(splitId) {
 
 function printWHT(splitId) {
   const form = buildWHTForm(splitId);
-  let fileSplit = allData.find(r => r.__backendId === splitId);
+  let fileSplit = allData.find(r => r.__backendId === dsrResolveRecordId(splitId));
   let fileInst = null;
   if (String(splitId).indexOf('pinst:') === 0) {
     fileInst = allData.find(r => r.__backendId === String(splitId).slice(6));
@@ -4867,13 +4852,8 @@ let _dsrLiveSaveTimers = {};
 let _dsrDraftSavedUntil = 0;
 let _dsrLastSyncState = {};
 let _dsrManualPending = new Set();
-try {
-  JSON.parse(localStorage.getItem('DSR_manual_pending') || '[]').forEach(function (id) { if (id) _dsrManualPending.add(id); });
-} catch (ignore) {}
-
-function dsrPersistManualPending() {
-  try { localStorage.setItem('DSR_manual_pending', JSON.stringify(Array.from(_dsrManualPending))); } catch (ignore) {}
-}
+let _dsrMemoryFormDrafts = new Map();
+function dsrPersistManualPending() {}
 
 function dsrMarkManualPending(id) {
   if (!id) return;
@@ -4913,7 +4893,7 @@ function dsrSaveFormDraft(form) {
     fields[key] = { value: field.value, checked: !!field.checked, type: field.type || field.tagName };
   });
   try {
-    localStorage.setItem(dsrFormDraftKey(form, index), JSON.stringify({ savedAt: Date.now(), fields: fields }));
+    _dsrMemoryFormDrafts.set(dsrFormDraftKey(form, index), JSON.stringify({ savedAt: Date.now(), fields: fields }));
   } catch (ignore) {}
 }
 
@@ -4939,12 +4919,12 @@ function dsrRestoreFormDrafts() {
     if (form.dataset.dsrDraftRestored === 'true') return;
     form.dataset.dsrDraftRestored = 'true';
     var raw = null;
-    try { raw = localStorage.getItem(dsrFormDraftKey(form, index)); } catch (ignore) {}
+    try { raw = _dsrMemoryFormDrafts.get(dsrFormDraftKey(form, index)); } catch (ignore) {}
     if (!raw) return;
     try {
       var draft = JSON.parse(raw);
       if (!draft || !draft.savedAt || Date.now() - draft.savedAt > 7 * 24 * 60 * 60 * 1000) {
-        localStorage.removeItem(dsrFormDraftKey(form, index));
+        _dsrMemoryFormDrafts.delete(dsrFormDraftKey(form, index));
         return;
       }
       dsrDraftFields(form).forEach(function (field, fieldIndex) {
@@ -4965,7 +4945,7 @@ function dsrClearFormDraft(form) {
   _dsrFormDraftTimers.delete(form);
   var forms = Array.from(document.querySelectorAll('#main-content form, #main-content [data-dsr-draft-group]'));
   var index = Math.max(0, forms.indexOf(form));
-  try { localStorage.removeItem(dsrFormDraftKey(form, index)); } catch (ignore) {}
+  try { _dsrMemoryFormDrafts.delete(dsrFormDraftKey(form, index)); } catch (ignore) {}
 }
 
 document.addEventListener('submit', function (event) {
@@ -4975,7 +4955,7 @@ document.addEventListener('submit', function (event) {
   var draftKey = dsrFormDraftKey(form, Math.max(0, forms.indexOf(form)));
   setTimeout(function () {
     if (!form.isConnected) {
-      try { localStorage.removeItem(draftKey); } catch (ignore) {}
+      try { _dsrMemoryFormDrafts.delete(draftKey); } catch (ignore) {}
     }
   }, 1800);
 }, true);
@@ -5006,7 +4986,7 @@ function dsrScheduleLiveRecordSave(key, record) {
 }
 
 function dsrQueueProfileAutosave(id) {
-  var record = allData.find(function (item) { return item.__backendId === id; });
+  var record = allData.find(function (item) { return item.__backendId === dsrResolveRecordId(id); });
   if (!record || !document.getElementById('pf-name')) return;
   var next = Object.assign({}, record, {
     role: document.getElementById('pf-role').value,
@@ -5041,7 +5021,7 @@ function dsrQueueProjectProgress(projId) {
 }
 
 function dsrHasPendingDraft() {
-  return _dsrDirty || _dsrManualPending.size > 0 || _dsrFormDraftTimers.size > 0 || Object.keys(_dsrLiveSaveTimers).length > 0 ||
+  return _dsrMemoryFormDrafts.size > 0 || (window.dataSdk && window.dataSdk.draftCount && window.dataSdk.draftCount() > 0) || _dsrDirty || _dsrManualPending.size > 0 || _dsrFormDraftTimers.size > 0 || Object.keys(_dsrLiveSaveTimers).length > 0 ||
     (typeof _qt !== 'undefined' && Object.values(_qt).some(function (st) { return !!st.debounce; }));
 }
 function dsrMarkEdited(event) {
@@ -5094,8 +5074,11 @@ function dsrShowSyncStatus(state) {
   if (!label) return;
   var draftSaving = _dsrFormDraftTimers.size > 0 || Object.keys(_dsrLiveSaveTimers).length > 0 ||
     (typeof _qt !== 'undefined' && Object.values(_qt).some(function (st) { return !!st.debounce; }));
-  label.textContent = draftSaving ? 'กำลังบันทึกข้อความในเครื่อง…' :
-    Date.now() < _dsrDraftSavedUntil ? 'บันทึกข้อความในเครื่องแล้ว' :
+  var unsavedCount = window.dataSdk && window.dataSdk.draftCount ? window.dataSdk.draftCount() : 0;
+  var saveAll = document.getElementById('dsr-save-all');
+  if (saveAll && !saveAll.disabled) saveAll.textContent = unsavedCount ? 'บันทึกทั้งหมด / ส่ง Google (' + unsavedCount + ')' : 'บันทึกทั้งหมด / ส่ง Google';
+  label.textContent = unsavedCount || draftSaving || _dsrManualPending.size || _dsrMemoryFormDrafts.size || _dsrDirty ? 'ฉบับร่างบนหน้าจอ · ยังไม่บันทึกและยังไม่ส่ง Google' :
+    Date.now() < _dsrDraftSavedUntil ? 'ฉบับร่างพร้อม · ยังไม่บันทึก' :
     _dsrManualPending.size ? 'แก้ไขในเครื่องแล้ว · กด Save เพื่อส่ง Google (' + _dsrManualPending.size + ')' :
     state.pending || state.folderSaving ? 'กำลังบันทึกลงเครื่อง…' + (state.pending ? ' (' + state.pending + ')' : '') :
     state.failed ? 'บันทึกในเครื่องไม่สำเร็จ' :
@@ -5672,7 +5655,7 @@ function htmlText(v) { return esc(v || '').replace(/\n/g, '<br>'); }
       return;
     }
     var project = allData.find(function(r){ return r.record_type === 'project' && r.project_id === projId; });
-    var q = quotationId ? allData.find(function(r){ return r.__backendId === quotationId; }) : (boq.quotation_id ? allData.find(function(r){ return r.__backendId === boq.quotation_id; }) : getQuotation(projId));
+    var q = quotationId ? allData.find(function(r){ return r.__backendId === dsrResolveRecordId(quotationId); }) : (boq.quotation_id ? allData.find(function(r){ return r.__backendId === boq.quotation_id; }) : getQuotation(projId));
     var items = safeParseJSON(boq.items_json).map(normalizeSavedBOQItem);
     _boqAI = {
       projectId: projId,
@@ -6694,10 +6677,72 @@ function htmlText(v) { return esc(v || '').replace(/\n/g, '<br>'); }
 })();
 /* ===== END BOQ SUPPLIER CATEGORY + SYNC BADGE PATCH ===== */
 
-// Explicit Save actions flush the queued changes to Google once, after all local
-// calculations are finished. Typing and number recalculation stay offline.
+
+function dsrResolveRecordId(id) { return window.dataSdk && window.dataSdk.resolveId ? window.dataSdk.resolveId(id) : id; }
+var _dsrDraftRenderTimer = null;
+function dsrRenderDraftChange(record) {
+  if (record.record_type === 'log') return;
+  if (record.record_type === 'installment' && currentPage === 'project-detail') {
+    dsrRenderInstallments(window._navCtx);
+    return;
+  }
+  if (_dsrDraftRenderTimer) clearTimeout(_dsrDraftRenderTimer);
+  var page = currentPage, context = window._navCtx;
+  _dsrDraftRenderTimer = setTimeout(function () {
+    _dsrDraftRenderTimer = null;
+    if (page !== currentPage || context !== window._navCtx) return;
+    var focused = document.activeElement;
+    if (focused && /^(INPUT|TEXTAREA|SELECT)$/.test(focused.tagName)) return;
+    document.querySelectorAll('#main-content form, #main-content [data-dsr-draft-group]').forEach(dsrSaveFormDraft);
+    var main = document.getElementById('main-content'), scroll = main.scrollTop;
+    renderPage(); main.scrollTop = scroll;
+  }, 0);
+}
+async function dsrPrepareDraftsForSave() {
+  Object.keys(_dsrLiveSaveTimers).forEach(function(key) {
+    var entry = _dsrLiveSaveTimers[key]; clearTimeout(entry.timer); delete _dsrLiveSaveTimers[key];
+    window.dataSdk.updateLocal(entry.record);
+  });
+  Object.keys(_qt).forEach(function(id) {
+    var st = _qt[id];
+    if (!st || (!st.dirty && !st.debounce)) return;
+    if (st.debounce) clearTimeout(st.debounce);
+    st.debounce = null;
+    var totals = _qtCalc(st);
+    var record = Object.assign({}, st.q, {items_json:JSON.stringify(st.items),subtotal:totals.sub,vat_amount:totals.vat,client_wht_amount:totals.wht,grand_total:totals.tot});
+    window.dataSdk.updateLocal(record);
+  });
+}
+async function dsrSaveAll(appliedForm) {
+  var button = document.getElementById('dsr-save-all');
+  if (!button || button.disabled) return;
+  if (!appliedForm && Array.from(document.querySelectorAll('#main-content form')).some(function(form){ return form.getClientRects().length > 0 && !form.dataset.dsrLiveSave; })) {
+    showToast('กดเพิ่มหรือบันทึกในฟอร์มที่เปิดอยู่ก่อน แล้วกดบันทึกทั้งหมด', 'error'); return;
+  }
+  button.disabled = true; button.textContent = 'กำลังบันทึก…';
+  var saveEditVersion = _dsrEditVersion;
+  try {
+    await dsrPrepareDraftsForSave();
+    var result = await window.dataSdk.commitDrafts();
+    if (!result || !result.isOk) throw new Error((result && result.error) || 'บันทึกไม่สำเร็จ · ฉบับร่างยังอยู่');
+    if (!window.dataSdk.draftCount() && saveEditVersion === _dsrEditVersion) {
+      _dsrManualPending.clear(); _dsrDirty = false;
+      Object.values(_qt).forEach(function(st){st.dirty = false;});
+    }
+    showToast('บันทึกแล้ว · กำลังตรวจการส่ง Google');
+    window.dataSdk.getSyncInfo().then(function(info){
+      if (!info.enabled || !info.configured) { showToast('บันทึกในเบราว์เซอร์แล้ว · ยังไม่ได้เชื่อม Google', 'error'); return; }
+      return window.dataSdk.sendSavedToGoogle().then(function(sync){
+        showToast(sync && sync.isOk && !sync.pending ? 'บันทึกและส่ง Google แล้ว' : 'บันทึกในเบราว์เซอร์แล้ว · ส่ง Google ยังไม่สำเร็จ', sync && sync.isOk && !sync.pending ? 'success' : 'error');
+      });
+    }).catch(function(){showToast('บันทึกในเบราว์เซอร์แล้ว · กรุณาตรวจการเชื่อมต่อ Google', 'error');});
+  } catch(error) { showToast(error.message || 'บันทึกไม่สำเร็จ · ฉบับร่างยังอยู่', 'error'); }
+  finally { button.disabled = false; dsrShowSyncStatus(_dsrLastSyncState || {}); }
+}
+
+// Editing actions apply drafts only. Explicit Save buttons commit them; Add/Delete do not.
 [
-  'saveProfile', 'updateProfile', 'saveProject', 'saveInstallment', 'saveExpense',
+  'saveProfile', 'updateProfile', 'saveSettings', 'saveProject', 'saveInstallment', 'saveExpense',
   'addSimpleTimelineItem', 'saveProjectProgress', 'addTimelineItem',
   'editProjectName', 'addPartnerToPie', 'savePartnerInst', 'createQuotation',
   'saveAllocRow', 'saveBOQToProject', 'issueInvoice', 'issueReceipt', 'markPaid',
@@ -6710,30 +6755,19 @@ function htmlText(v) { return esc(v || '').replace(/\n/g, '<br>'); }
   window[name] = async function () {
     var page = currentPage, context = window._navCtx, editVersion = _dsrEditVersion;
     var saved = window._dsrSavedVersion || 0, failed = window._dsrFailedVersion || 0;
+    var submittedForm = arguments[0] && arguments[0].target;
     var result = await original.apply(this, arguments);
     var didSave = (window._dsrSavedVersion || 0) > saved && (window._dsrFailedVersion || 0) === failed;
+    if (didSave && submittedForm && submittedForm.tagName === 'FORM') dsrClearFormDraft(submittedForm);
     if (didSave && name !== 'saveInstallment' &&
         page === currentPage && context === window._navCtx && editVersion === _dsrEditVersion &&
         !window.dataSdk.isBusy() && !Object.values(_qt).some(function (st) { return !!st.debounce; })) {
+      if (_dsrDraftRenderTimer) { clearTimeout(_dsrDraftRenderTimer); _dsrDraftRenderTimer = null; }
       var main = document.getElementById('main-content'), scroll = main.scrollTop;
       renderPage();
       main.scrollTop = scroll;
     }
-    if (didSave && window.dataSdk.flushGoogle && window.dataSdk.getSyncInfo) {
-      var syncInfo = await window.dataSdk.getSyncInfo();
-      if (syncInfo && syncInfo.enabled && syncInfo.configured && syncInfo.pending) {
-        var syncResult = await window.dataSdk.flushGoogle();
-        if (!syncResult || !syncResult.isOk) {
-          var failedInfo = await window.dataSdk.getSyncInfo();
-          showToast('ข้อมูลไม่หาย · ' + ((failedInfo && failedInfo.error) || 'รอส่ง Google'), 'error');
-        } else if (name === 'saveInstallment') {
-          var completedInfo = await window.dataSdk.getSyncInfo();
-          if (completedInfo && !completedInfo.pending && !completedInfo.error) showToast('ส่งงวดขึ้น Google แล้ว');
-        }
-      } else if (name === 'saveInstallment' && (!syncInfo || !syncInfo.enabled || !syncInfo.configured)) {
-        showToast('งวดอยู่ในเบราว์เซอร์เท่านั้น · กรุณาตั้งค่าและเปิด Google Sync', 'error');
-      }
-    }
+    if (didSave && ['saveProfile','updateProfile','saveSettings','saveProjectProgress','saveAllocRow','saveBOQToProject'].indexOf(name) >= 0) await dsrSaveAll(true);
     return result;
   };
 });

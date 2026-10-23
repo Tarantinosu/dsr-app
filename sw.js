@@ -1,10 +1,11 @@
 /* DSR+ app shell: keeps the interface available when the network is unavailable. */
-var CACHE_NAME = 'dsr-web-v17-installments';
+var CACHE_NAME = 'dsr-web-v18-manual-save';
 var APP_SHELL = [
   './',
   './index.html',
   './dsr-local.js',
   './dsr-hybrid.js',
+  './dsr-manual.js',
   './dsr-drive.js',
   './manifest.webmanifest',
   './assets/tailwind.css',
