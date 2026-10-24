@@ -1,4 +1,4 @@
-/* In-memory editing layer. Only commitDrafts/flushGoogle may persist a draft. */
+/* In-memory editing layer. Only commitDrafts persists a draft. */
 (function(root){
   'use strict';
   function copy(value){ return JSON.parse(JSON.stringify(value)); }
@@ -69,13 +69,10 @@
       init:function(next){handler=next;return base.init({onDataChanged:function(records){durable=copy(records);publish();}});},
       create:function(r){return stage('create',r);},update:function(r){return stage('update',r);},delete:function(r){return stage('delete',r);},
       createLocal:function(r){return stage('create',r);},updateLocal:function(r){return stage('update',r);},deleteLocal:function(r){return stage('delete',r);},
-      sendSavedToGoogle:function(){return base.flushGoogle();},
       resolveId:idOf,
       draftCount:function(){return drafts.size;},isSavingDrafts:function(){return !!saving;},commitDrafts:commitDrafts,
-      flushGoogle:async function(){var result=await commitDrafts();return result&&result.isOk?base.flushGoogle():result;},
-      getSyncInfo:async function(){var info=await base.getSyncInfo();return Object.assign({},info,{drafts:drafts.size});},
       refresh:function(){return drafts.size?Promise.resolve({isOk:false,error:'unsaved-changes'}):base.refresh();},
-      syncNow:function(){return drafts.size?Promise.resolve({isOk:false,error:'unsaved-changes'}):base.syncNow();},
+      refreshLocal:function(){return drafts.size?Promise.resolve({isOk:false,error:'unsaved-changes'}):base.refresh();},
       importBackup:function(){return drafts.size?Promise.resolve({isOk:false,error:'unsaved-changes'}):base.importBackup.apply(base,arguments);},
       restoreFromStorageFolder:function(){return drafts.size?Promise.resolve({isOk:false,error:'unsaved-changes'}):base.restoreFromStorageFolder.apply(base,arguments);}
     });

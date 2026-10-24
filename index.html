@@ -4,16 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#0f172a">
-  <title>DSR+ Web 2026.10.24 Manual Save | DOPIOUS SHARE REVENUE</title>
+  <title>DSR+ Web 2026.10.24 Local | DOPIOUS SHARE REVENUE</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="assets/tailwind.css">
   <script src="assets/lucide.min.js"></script>
   <script src="assets/xlsx.full.min.js"></script>
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script src="dsr-drive.js?v=20261023-web-installments"></script>
-  <script src="dsr-local.js?v=20261023-manual-save"></script>
-  <script src="dsr-hybrid.js?v=20261024-web-refresh"></script>
-  <script src="dsr-manual.js?v=20261023-manual-save"></script>
+  <script src="dsr-local.js?v=20261024-local"></script>
+  <script src="dsr-manual.js?v=20261024-local"></script>
   <script>
 // ===== OFFLINE SDK — data stays on this computer =====
 (function () {
@@ -30,7 +27,7 @@
         if (window.elementSdk._onConfigChange) window.elementSdk._onConfigChange(_cfg);
       },
       setConfig: async function (patch) {
-        Object.assign(_cfg, patch);
+        Object.assign(_cfg, window.elementSdk.config, patch);
         window.elementSdk.config = _cfg;
         // Keep large images in IndexedDB. localStorage is intentionally limited
         // and previously made the whole Save button fail when several images existed.
@@ -68,15 +65,15 @@
     };
   }
 
-  // Writes commit to IndexedDB immediately. Google Apps Script synchronization runs in the background.
+  // Edits are staged until Save All writes to the existing browser database.
   if (!window.dataSdk) {
-    window.dataSdk = createDSRManual(createDSRHybrid, {
+    window.dataSdk = createDSRManual(createDSRLocal, {
+      mirrorFolder: false,
       fetch: window.fetch.bind(window),
       storage: window.localStorage,
       getRecords: function () { return allData; },
       setRecords: function (records) { allData = records; },
       hasPendingDraft: function () { return dsrHasPendingDraft(); },
-      onRemoteData: function () { dsrRenderActionWhenIdle(); },
       onStatus: function (state) { dsrShowSyncStatus(state); },
       onSaved: function (action, record) {
         window._dsrSavedVersion = (window._dsrSavedVersion || 0) + 1;
@@ -89,8 +86,6 @@
       },
       onFailure: function () { window._dsrFailedVersion = (window._dsrFailedVersion || 0) + 1; }
     });
-    window.dsrGetUrl = window.dataSdk.getUrl;
-    window.dsrSetUrl = function (value) { return window.dataSdk.setUrl(value); };
     window.dsrRefresh = function () { return dsrRequestRefresh(); };
   }
 
@@ -295,10 +290,9 @@ html,body{height:100%;margin:0}
     </nav>
     <div class="no-print" style="padding:12px;border-top:1px solid #292929;font-size:12px">
       <div id="dsr-save-status" role="status" aria-live="polite" style="margin-bottom:8px;color:#94a3b8">กำลังโหลดข้อมูล…</div>
-      <button id="dsr-save-all" type="button" onclick="dsrSaveAll()" style="padding:8px 10px;margin-bottom:8px;background:#ea580c;color:white;border-radius:6px;width:100%">บันทึกทั้งหมด / ส่ง Google</button>
+      <button id="dsr-save-all" type="button" onclick="dsrSaveAll()" style="padding:8px 10px;margin-bottom:8px;background:#ea580c;color:white;border-radius:6px;width:100%">บันทึกทั้งหมด</button>
       <div style="font-size:11px;color:#94a3b8;margin-bottom:8px">เพิ่ม/แก้/ลบเป็นฉบับร่างจนกดบันทึก · ปิดหรือรีโหลดก่อนบันทึก ฉบับร่างจะหาย</div>
-      <button id="dsr-refresh-button" type="button" onclick="dsrRequestRefresh()" style="padding:6px 10px;border:1px solid #444;border-radius:6px">↻ ซิงก์ข้อมูล</button>
-      <button id="dsr-retry-save" type="button" hidden onclick="dsrRetryGoogleSync()" style="padding:6px 10px;color:#fbbf24">ลองส่ง Google อีกครั้ง</button>
+      <button id="dsr-refresh-button" type="button" onclick="dsrRequestRefresh()" style="padding:6px 10px;border:1px solid #444;border-radius:6px">↻ Refresh</button>
     </div>
   </aside>
   <main id="main-content" class="flex-1 overflow-auto h-full w-full"></main>
@@ -326,7 +320,6 @@ const defaultConfig = {
   company_signature_data: '',
   company_stamp_data: '',
   company_payment_qr_data: '',
-  google_drive_client_id: '',
   background_color: '#050505',
   surface_color: '#0b0b0b',
   text_color: '#e2e8f0',
@@ -944,45 +937,8 @@ async function saveProject(e) {
   if (result.isOk) {
     showToast('สร้างโปรเจกต์สำเร็จ');
     await addLog(pid, 'สร้างโปรเจกต์', document.getElementById('proj-name').value);
-    if (!result.isDraft && window.dsrDrive && window.dsrDrive.isConnected()) {
-      await ensureProjectDriveFolder(pid, true, false);
-    }
   }
   else { showToast('เกิดข้อผิดพลาด', 'error'); btn.disabled = false; btn.textContent = 'สร้าง'; }
-}
-
-async function ensureProjectDriveFolder(projId, silent, allowConnect) {
-  const project = allData.find(function(r) { return r.record_type === 'project' && r.project_id === projId; });
-  if (!project || !window.dsrDrive) return { isOk:false, error:'drive-unavailable' };
-  if (!window.dsrDrive.isConnected()) {
-    if (!allowConnect) return { isOk:false, error:'not-connected' };
-    const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
-    const clientId = (cfg && cfg.google_drive_client_id) || window.dsrDrive.getClientId();
-    if (!clientId) {
-      showToast('ยังไม่ได้ตั้งค่า Google OAuth Client ID · ไปที่ตั้งค่าระบบก่อน', 'error');
-      return { isOk:false, error:'missing-client-id' };
-    }
-    const connected = await window.dsrDrive.connect(clientId);
-    if (!connected.isOk) {
-      showToast('เชื่อมต่อ Google Drive ไม่สำเร็จ', 'error');
-      return connected;
-    }
-  }
-  if (!silent) showToast('กำลังสร้างโฟลเดอร์ Google Drive…');
-  const folder = await window.dsrDrive.ensureProjectFolder(project);
-  if (!folder.isOk) {
-    if (!silent) showToast('สร้างโฟลเดอร์ Drive ไม่สำเร็จ' + (folder.detail ? ' · ' + folder.detail : ''), 'error');
-    return folder;
-  }
-  const updated = Object.assign({}, project, {
-    drive_folder_id: folder.folderId,
-    drive_folder_url: folder.folderUrl,
-    drive_folder_name: folder.folderName,
-    drive_connected_at: new Date().toISOString()
-  });
-  const saved = await window.dataSdk.update(updated);
-  if (saved.isOk && !silent) showToast('สร้างโฟลเดอร์ Google Drive แล้ว');
-  return saved.isOk ? Object.assign({ isOk:true }, folder) : saved;
 }
 
 async function editProjectName(projId) {
@@ -1168,7 +1124,7 @@ async function markProjectDone(projId, e) {
     }
 
     await addLog(projId, 'เปลี่ยนสถานะ', 'Done');
-    showToast('เปลี่ยนสถานะในฉบับร่างแล้ว · กดบันทึกทั้งหมดเพื่อส่ง Google');
+    showToast('เปลี่ยนสถานะในฉบับร่างแล้ว · กดบันทึกทั้งหมดเพื่อเก็บข้อมูล');
   });
 }
 
@@ -1828,14 +1784,12 @@ function renderProjectDetail(el, projId) {
   const displayStatus = getProjectDisplayStatus(project);
   const allInstPaid = installments.length > 0 && installments.every(function(i){ return i.status === 'paid'; });
   const showDoneBtn = displayStatus !== 'done' && allInstPaid;
-  const driveButton = project.drive_folder_url
-    ? '<a href="' + esc(project.drive_folder_url) + '" target="_blank" rel="noopener" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm flex items-center gap-2"><i data-lucide="hard-drive" class="w-4 h-4"></i> Google Drive</a>'
-    : '<button class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="ensureProjectDriveFolder(\'' + projId + '\',false,true)"><i data-lucide="hard-drive-upload" class="w-4 h-4"></i> สร้างโฟลเดอร์ Drive</button>';
+
 
   el.innerHTML = '<div class="p-6 fade-in">' +
     '<button class="text-sm text-slate-400 hover:text-white mb-4 flex items-center gap-1" onclick="navigate(\'projects\')"><i data-lucide="arrow-left" class="w-4 h-4"></i> กลับ</button>' +
     '<div class="flex justify-between items-start mb-6"><div><div class="flex items-center gap-2"><h1 class="text-2xl font-bold text-white">' + (project.project_name||'Untitled') + '</h1><button type="button" class="p-1 text-slate-500 hover:text-orange-400 rounded" title="แก้ไขชื่อโปรเจกต์" aria-label="แก้ไขชื่อโปรเจกต์" onclick="editProjectName(\'' + projId + '\')"><i data-lucide="pencil" class="w-4 h-4"></i></button></div><p class="text-slate-400 text-sm">ลูกค้า: ' + (project.client_name||'-') + ' · Fixed Cost: ' + fmt(project.fixed_cost||0) + ' บาท</p></div>' +
-    '<div class="flex items-center gap-2 flex-wrap justify-end">' + driveButton + (showDoneBtn ? '<button class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="markProjectDone(\'' + projId + '\',event)"><i data-lucide="check-circle" class="w-4 h-4"></i> เสร็จสิ้น</button>' : '') + '<span class="' + badgeClass(displayStatus) + '">' + displayStatus + '</span></div></div>' +
+    '<div class="flex items-center gap-2 flex-wrap justify-end">' + (showDoneBtn ? '<button class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="markProjectDone(\'' + projId + '\',event)"><i data-lucide="check-circle" class="w-4 h-4"></i> เสร็จสิ้น</button>' : '') + '<span class="' + badgeClass(displayStatus) + '">' + displayStatus + '</span></div></div>' +
     '<div class="flex gap-1 border-b border-slate-800 mb-4">' +
     '<button class="tab-btn active" onclick="showTab(\'qt\',this)">ใบเสนอราคา</button>' +
     '<button class="tab-btn" onclick="showTab(\'split\',this)">พาร์ทเนอร์ (' + splits.length + ')</button>' +
@@ -1991,7 +1945,7 @@ function _qtSave(qId) {
   dsrMarkManualPending(qId);
   st.debounce = setTimeout(function () {
     st.debounce = null;
-    // Keystrokes save to IndexedDB only. Google is contacted by the Save button.
+    // Keystrokes stage the quotation; Save All persists the draft.
     var writer = window.dataSdk.updateLocal || window.dataSdk.update;
     writer.call(window.dataSdk, Object.assign({}, st.q));
   }, 350);
@@ -2208,16 +2162,16 @@ async function recalcQuotation(q, items, saveMode) {
     grandTotal = roundHU(subtotal - whtAmount);
   }
   const updated = Object.assign({}, q, { items_json: JSON.stringify(items), subtotal: subtotal, vat_amount: vatAmount, client_wht_rate: (q.client_wht_rate||0), client_wht_amount: whtAmount, grand_total: grandTotal });
-  var useGoogle = saveMode !== 'local';
-  var writer = useGoogle ? window.dataSdk.update : (window.dataSdk.updateLocal || window.dataSdk.update);
+  var usePrimaryWriter = saveMode !== 'local';
+  var writer = usePrimaryWriter ? window.dataSdk.update : (window.dataSdk.updateLocal || window.dataSdk.update);
   var result = await writer.call(window.dataSdk, updated);
   if (_qt[q.__backendId]) _qt[q.__backendId].q = updated;
-  await cascadeInstallments(q.project_id, grandTotal, useGoogle);
-  await cascadePartnerSplits(q.project_id, useGoogle);
+  await cascadeInstallments(q.project_id, grandTotal, usePrimaryWriter);
+  await cascadePartnerSplits(q.project_id, usePrimaryWriter);
   return result;
 }
 
-async function cascadeInstallments(projId, grandTotal, useGoogle) {
+async function cascadeInstallments(projId, grandTotal, usePrimaryWriter) {
   const installments = getInstallments(projId);
   if (installments.length === 0) return;
   let lockedTotal = 0;
@@ -2239,13 +2193,13 @@ async function cascadeInstallments(projId, grandTotal, useGoogle) {
         const prev = unlocked.slice(0,i).reduce(function(s,uu) { return totalPct > 0 ? s + roundHU(remaining*(uu.split_value||0)/totalPct) : s + roundHU(remaining/unlocked.length); }, 0);
         newAmt = roundHU(remaining - prev);
       }
-      var writer = useGoogle ? window.dataSdk.update : (window.dataSdk.updateLocal || window.dataSdk.update);
+      var writer = usePrimaryWriter ? window.dataSdk.update : (window.dataSdk.updateLocal || window.dataSdk.update);
       await writer.call(window.dataSdk, Object.assign({}, u, { amount: newAmt }));
     }
   }
 }
 
-async function cascadePartnerSplits(projId, useGoogle) {
+async function cascadePartnerSplits(projId, usePrimaryWriter) {
   const q = getQuotation(projId);
   const splits = getPartnerSplits(projId);
   if (!q || splits.length === 0) return;
@@ -2259,7 +2213,7 @@ async function cascadePartnerSplits(projId, useGoogle) {
     const { vatEnabled, vatRate } = resolvePartnerVat(sp);
     const vatAmt = vatEnabled ? roundHU(partnerAmt * vatRate / 100) : 0;
     const whtAmt = roundHU(partnerAmt * whtRate / 100);
-    var writer = useGoogle ? window.dataSdk.update : (window.dataSdk.updateLocal || window.dataSdk.update);
+    var writer = usePrimaryWriter ? window.dataSdk.update : (window.dataSdk.updateLocal || window.dataSdk.update);
     await writer.call(window.dataSdk, Object.assign({}, sp, {
       partner_amount: partnerAmt,
       partner_vat_enabled: vatEnabled, partner_vat_rate: vatRate, partner_vat_amount: vatAmt,
@@ -2323,7 +2277,7 @@ async function saveInstallment(e, projId) {
       area.innerHTML = '';
       dsrRenderInstallments(projId);
     }
-    showToast('เพิ่มงวดในฉบับร่างแล้ว · กดบันทึกทั้งหมดเพื่อส่ง Google');
+    showToast('เพิ่มงวดในฉบับร่างแล้ว · กดบันทึกทั้งหมดเพื่อเก็บข้อมูล');
   } catch (error) {
     showToast(error.message || 'เพิ่มงวดไม่สำเร็จ กรุณาลองใหม่', 'error');
   } finally {
@@ -3409,7 +3363,7 @@ function showUploadExtDoc(projId) {
     '<div id="ext-preview-'+projId+'" class="mb-3"></div>' +
     '<div class="flex gap-2 justify-end">' +
       '<button type="button" class="px-4 py-2 bg-slate-700 text-slate-300 hover:bg-slate-600 rounded-lg text-sm" onclick="document.getElementById(\'ext-upload-'+projId+'\').innerHTML=\'\'">ยกเลิก</button>' +
-      '<button id="ext-save-'+projId+'" type="button" class="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white rounded-lg text-sm flex items-center gap-2" onclick="saveExtDoc(\''+projId+'\')"><i data-lucide="cloud-upload" class="w-4 h-4"></i> อัปโหลดไป Drive</button>' +
+      '<button id="ext-save-'+projId+'" type="button" class="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white rounded-lg text-sm flex items-center gap-2" onclick="saveExtDoc(\''+projId+'\')"><i data-lucide="cloud-upload" class="w-4 h-4"></i> แนบไฟล์</button>' +
     '</div>' +
     '</div>';
   if (window.lucide) lucide.createIcons();
@@ -3444,42 +3398,28 @@ async function saveExtDoc(projId) {
   if (file.size > 25 * 1024 * 1024) { showToast('ไฟล์ใหญ่เกิน 25MB', 'error'); return; }
   const project = allData.find(function(r){ return r.record_type === 'project' && r.project_id === projId; });
   if (!project) { showToast('ไม่พบโปรเจกต์', 'error'); return; }
-  const connected = await dsrEnsureGoogleDriveConnected();
-  if (!connected.isOk) return;
   const btn = document.getElementById('ext-save-' + projId);
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader-circle" class="w-4 h-4 animate-spin"></i> กำลังอัปโหลด…'; if (window.lucide) lucide.createIcons(); }
+  if (btn) { btn.disabled = true; btn.textContent = 'กำลังแนบไฟล์…'; }
   try {
-    const uploaded = await window.dsrDrive.uploadProjectFile(project, file);
-    if (!uploaded.isOk) throw new Error(uploaded.detail || uploaded.error || 'อัปโหลด Drive ไม่สำเร็จ');
-    if (project.drive_folder_id !== uploaded.folderId || project.drive_folder_url !== uploaded.folderUrl) {
-      const projectSaved = await window.dataSdk.update(Object.assign({}, project, {
-        drive_folder_id: uploaded.folderId,
-        drive_folder_url: uploaded.folderUrl,
-        drive_folder_name: uploaded.folderName,
-        drive_connected_at: new Date().toISOString()
-      }));
-      if (!projectSaved.isOk) throw new Error('บันทึกลิงก์โฟลเดอร์ไม่สำเร็จ');
-    }
-    const result = await window.dataSdk.create({
-      record_type: 'external_doc',
-      project_id: projId,
-      ext_doc_name: name,
-      ext_doc_date: date ? new Date(date + 'T12:00:00').toISOString() : new Date().toISOString(),
-      ext_doc_file_type: uploaded.mimeType || file.type,
-      ext_doc_file_name: uploaded.fileName || file.name,
-      storage_provider: 'google_drive',
-      drive_file_id: uploaded.fileId,
-      drive_file_url: uploaded.fileUrl,
-      drive_download_url: uploaded.downloadUrl,
-      drive_folder_id: uploaded.folderId,
-      created_at: new Date().toISOString()
+    const data = await new Promise(function(resolve, reject) {
+      const reader = new FileReader();
+      reader.onload = function() { resolve(reader.result); };
+      reader.onerror = function() { reject(new Error('อ่านไฟล์ไม่สำเร็จ')); };
+      reader.readAsDataURL(file);
     });
-    if (!result.isOk) throw new Error('บันทึกข้อมูลเอกสารไม่สำเร็จ');
-    showToast('อัปโหลดเข้า Google Drive สำเร็จ ✓');
+    const result = await window.dataSdk.create({
+      record_type: 'external_doc', project_id: projId, ext_doc_name: name,
+      ext_doc_date: date ? new Date(date + 'T12:00:00').toISOString() : new Date().toISOString(),
+      ext_doc_file_type: file.type, ext_doc_file_name: file.name,
+      storage_provider: 'local', ext_doc_data: data, created_at: new Date().toISOString()
+    });
+    if (!result || !result.isOk) throw new Error('แนบไฟล์ไม่สำเร็จ');
+    showToast('แนบไฟล์แล้ว · กดบันทึกทั้งหมด');
     renderDocuments(document.getElementById('main-content'));
   } catch (error) {
-    showToast((error && error.message) || 'อัปโหลดไม่สำเร็จ', 'error');
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="cloud-upload" class="w-4 h-4"></i> อัปโหลดไป Drive'; if (window.lucide) lucide.createIcons(); }
+    showToast(error.message || 'แนบไฟล์ไม่สำเร็จ', 'error');
+  } finally {
+    if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = 'แนบไฟล์'; }
   }
 }
 
@@ -3512,7 +3452,7 @@ function viewExtDoc(extId) {
 async function deleteExtDoc(extId) {
   const rec = allData.find(function(r){ return r.__backendId === dsrResolveRecordId(extId); });
   if (!rec) return;
-  showConfirm('ลบเอกสาร "' + (rec.ext_doc_name||'เอกสาร') + '" ?\n\nรายการจะถูกลบเมื่อกดบันทึกทั้งหมด · ไฟล์ใน Google Drive ยังอยู่', async function() {
+  showConfirm('ลบเอกสาร "' + (rec.ext_doc_name||'เอกสาร') + '" ?\n\nรายการจะถูกลบเมื่อกดบันทึกทั้งหมด · ลิงก์ไฟล์เก่าภายนอกจะไม่ถูกลบ', async function() {
     const r = await window.dataSdk.delete(rec);
     if (r.isOk) { showToast('ลบแล้ว'); renderDocuments(document.getElementById('main-content')); }
     else showToast('เกิดข้อผิดพลาด', 'error');
@@ -4023,73 +3963,8 @@ function clearCompanyAsset(key, previewId) {
   if (window.elementSdk && window.elementSdk.config) window.elementSdk.config[key] = '';
 }
 
-async function dsrEnsureGoogleDriveConnected(silent) {
-  if (!window.dsrDrive) {
-    if (!silent) showToast('ระบบเชื่อมต่อ Google Drive ยังโหลดไม่สำเร็จ', 'error');
-    return { isOk:false, error:'drive-unavailable' };
-  }
-  if (window.dsrDrive.isConnected()) return { isOk:true, alreadyConnected:true };
-  const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
-  const input = document.getElementById('dsr-drive-client-id');
-  const clientId = String((input && input.value) || (cfg && cfg.google_drive_client_id) || window.dsrDrive.getClientId() || '').trim();
-  if (!clientId) {
-    if (!silent) showToast('เจ้าของระบบต้องตั้งค่า Google OAuth Client ID ก่อน', 'error');
-    return { isOk:false, error:'missing-client-id' };
-  }
-  const result = await window.dsrDrive.connect(clientId);
-  if (!result.isOk && !silent) {
-    const popupHint = result.error === 'popup_closed' || result.error === 'popup-failed' ? ' · กรุณาอนุญาต Popup' : '';
-    showToast('เชื่อมต่อ Google Drive ไม่สำเร็จ' + popupHint, 'error');
-  }
-  dsrUpdateDriveStatus();
-  return result;
-}
-
-async function dsrConnectGoogleDrive() {
-  const result = await dsrEnsureGoogleDriveConnected(false);
-  if (!result.isOk) return result;
-  showToast('เชื่อมต่อ Google Drive แล้ว · กำลังเตรียมโฟลเดอร์โปรเจกต์');
-  let created = 0;
-  const projects = getProjects().filter(function(project) { return !project.drive_folder_id; });
-  for (let i = 0; i < projects.length; i++) {
-    const folder = await ensureProjectDriveFolder(projects[i].project_id, true, false);
-    if (folder && folder.isOk) created++;
-  }
-  dsrUpdateDriveStatus();
-  showToast(created ? 'เชื่อมต่อแล้ว · สร้างโฟลเดอร์ให้ ' + created + ' โปรเจกต์' : 'เชื่อมต่อ Google Drive สำเร็จ');
-  return result;
-}
-
-function dsrDisconnectGoogleDrive() {
-  if (window.dsrDrive) window.dsrDrive.disconnect();
-  dsrUpdateDriveStatus();
-  showToast('ยกเลิกการเชื่อมต่อ Google Drive แล้ว');
-}
-
-function dsrUpdateDriveStatus() {
-  const el = document.getElementById('dsr-drive-status');
-  if (!el) return;
-  const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
-  const hasClientId = !!((cfg && cfg.google_drive_client_id) || (window.dsrDrive && window.dsrDrive.getClientId()));
-  const connected = !!(window.dsrDrive && window.dsrDrive.isConnected());
-  if (connected) {
-    el.innerHTML = '<div class="text-emerald-400 font-semibold">● เชื่อมต่อ Google Drive แล้ว</div><div class="text-slate-500 mt-1">โปรเจกต์ใหม่จะสร้างโฟลเดอร์อัตโนมัติ และไฟล์แนบจะอัปโหลดเข้า Drive โดยตรง</div>';
-  } else if (!hasClientId) {
-    el.innerHTML = '<div class="text-amber-400 font-semibold">ยังไม่พร้อมเชื่อมต่อ</div><div class="text-slate-500 mt-1">เจ้าของระบบต้องใส่ OAuth Client ID ใน “ตั้งค่าสำหรับเจ้าของระบบ” หนึ่งครั้ง</div>';
-  } else {
-    el.innerHTML = '<div class="text-slate-300 font-semibold">ยังไม่ได้เชื่อมต่อบัญชี Drive</div><div class="text-slate-500 mt-1">กดปุ่มด้านล่างแล้วเลือกบัญชี Google ที่ต้องการเก็บไฟล์</div>';
-  }
-  const connectBtn = document.getElementById('dsr-drive-connect-btn');
-  const disconnectBtn = document.getElementById('dsr-drive-disconnect-btn');
-  if (connectBtn) connectBtn.classList.toggle('hidden', connected);
-  if (disconnectBtn) disconnectBtn.classList.toggle('hidden', !connected);
-}
-
 function renderSettings(el) {
   const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
-  const googleSyncUrl = window.dataSdk && window.dataSdk.getUrl ? window.dataSdk.getUrl() : '';
-  let googleSyncEnabled = false;
-  try { googleSyncEnabled = localStorage.getItem('DSR_google_sync_enabled') !== 'false' && !!googleSyncUrl; } catch (e) {}
   el.innerHTML = '<div class="p-6 fade-in"><h1 class="text-2xl font-bold text-white mb-1">ตั้งค่าระบบ</h1><p class="text-slate-400 text-sm mb-6">จัดการข้อมูลบริษัทและรูปเอกสาร</p>' +
     '<div class="max-w-3xl"><form id="settings-form" onsubmit="saveSettings(event)" class="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">' +
     '<h2 class="text-lg font-semibold text-white">ข้อมูลบริษัท</h2>' +
@@ -4108,231 +3983,15 @@ function renderSettings(el) {
       assetUploadBlock('company_stamp_data','set-company-stamp','preview-company-stamp','ตราปั๊ม') +
       assetUploadBlock('company_payment_qr_data','set-company-payment-qr','preview-company-payment-qr','Payment QR Code') +
     '</div><p class="text-xs text-slate-500 mt-3">รูปจะไปแสดงบน Quotation, Invoice/Billing Note และ Receipt | Tax invoice และ QR payment จะขึ้นในเอกสารตรงตำแหน่งชำระเงิน</p></div>' +
-    '<div class="pt-5 border-t border-slate-700">' +
-    '<div class="flex items-center gap-2 mb-3"><div class="w-7 h-7 rounded-lg bg-sky-600/20 border border-sky-500/30 flex items-center justify-center flex-shrink-0"><i data-lucide="cloud-cog" class="w-3.5 h-3.5 text-sky-400"></i></div><h3 class="text-sm font-semibold text-white">Google Sync — ใช้ร่วมกันบนคอมและโทรศัพท์</h3></div>' +
-    '<p class="text-xs text-slate-400 mb-3 leading-relaxed">แก้ เพิ่ม หรือลบเป็นฉบับร่างบนหน้าจอก่อน ยังไม่เขียนฐานข้อมูลหรือเข้าคิว Google จนกด “บันทึกทั้งหมด / ส่ง Google” · ถ้าปิดหรือรีโหลดก่อนบันทึก ฉบับร่างจะหาย</p>' +
-    '<label class="text-xs text-slate-400 block mb-1.5">Apps Script Web App URL</label>' +
-    '<input id="dsr-google-url" type="url" inputmode="url" spellcheck="false" placeholder="https://script.google.com/macros/s/.../exec" value="' + esc(googleSyncUrl) + '" class="w-full px-3 py-2.5 bg-slate-950 border border-slate-700 rounded-lg text-xs text-white mono focus:border-sky-500 focus:outline-none">' +
-    '<label class="mt-3 flex items-center gap-2 text-xs text-slate-300 cursor-pointer"><input id="dsr-google-enabled" type="checkbox" class="accent-sky-500" ' + (googleSyncEnabled ? 'checked' : '') + '><span>เปิดซิงก์ Google อัตโนมัติ</span></label>' +
-    '<div id="dsr-google-sync-info" class="my-3 px-3 py-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-400">กำลังตรวจสอบสถานะ Google Sync…</div>' +
-    '<div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-2"><button type="button" onclick="dsrSaveGoogleSync()" class="px-3 py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="save" class="w-4 h-4"></i>บันทึกการเชื่อมต่อ</button><button type="button" onclick="dsrTestGoogleSync()" class="px-3 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="plug-zap" class="w-4 h-4"></i>ทดสอบ Google</button><button type="button" onclick="dsrSyncGoogleNow()" class="px-3 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="refresh-cw" class="w-4 h-4"></i>ส่งคิวตอนนี้</button><button type="button" onclick="dsrRetryGoogleSync()" class="px-3 py-2.5 bg-amber-700 hover:bg-amber-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="shield-check" class="w-4 h-4"></i>ตรวจและปลดคิว</button></div>' +
-    '<p class="text-[11px] text-slate-500 mt-2">ใช้ URL เดียวกันทุกเครื่องและต้องลงท้ายด้วย /exec · ถ้า URL เดิมเสีย สามารถเปลี่ยนได้โดยคิวในเครื่องจะยังอยู่ครบ</p></div>' +
-    '<div class="pt-5 border-t border-slate-700">' +
-    '<div class="flex items-center gap-2 mb-3"><div class="w-7 h-7 rounded-lg bg-blue-600/20 border border-blue-500/30 flex items-center justify-center flex-shrink-0"><i data-lucide="hard-drive" class="w-3.5 h-3.5 text-blue-400"></i></div><h3 class="text-sm font-semibold text-white">Google Drive — เก็บโฟลเดอร์และไฟล์โปรเจกต์</h3></div>' +
-    '<p class="text-xs text-slate-400 mb-3 leading-relaxed">ผู้ใช้กดเชื่อมต่อ เลือกบัญชี Google และอนุญาตได้ทันที ระบบขอสิทธิ์เฉพาะไฟล์และโฟลเดอร์ที่ DSR สร้างเท่านั้น</p>' +
-    '<div id="dsr-drive-status" class="mb-3 px-3 py-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-400">กำลังตรวจสอบ Google Drive…</div>' +
-    '<div class="grid sm:grid-cols-2 gap-2">' +
-      '<button id="dsr-drive-connect-btn" type="button" onclick="dsrConnectGoogleDrive()" class="px-3 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="log-in" class="w-4 h-4"></i>เชื่อมต่อ Google Drive</button>' +
-      '<button id="dsr-drive-disconnect-btn" type="button" onclick="dsrDisconnectGoogleDrive()" class="hidden px-3 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="log-out" class="w-4 h-4"></i>ยกเลิกการเชื่อมต่อ</button>' +
-    '</div>' +
-    '<details class="mt-3 bg-slate-950/60 border border-slate-800 rounded-lg p-3"><summary class="text-xs text-slate-400 cursor-pointer">ตั้งค่าสำหรับเจ้าของระบบ (ทำครั้งเดียว)</summary>' +
-      '<label class="text-[11px] text-slate-500 block mt-3 mb-1">Google OAuth Client ID</label>' +
-      '<input id="dsr-drive-client-id" type="text" spellcheck="false" placeholder="xxxxxxxx.apps.googleusercontent.com" value="' + esc(cfg.google_drive_client_id || defaultConfig.google_drive_client_id || '') + '" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white mono focus:border-blue-500 focus:outline-none">' +
-      '<p class="text-[11px] text-slate-500 mt-2">เพิ่ม Authorized JavaScript origins: https://tarantinosu.github.io และ http://127.0.0.1:8765</p>' +
-    '</details></div>' +
-    '<div class="pt-5 border-t border-slate-700">' +
-    '<div class="flex items-center gap-2 mb-3"><div class="w-7 h-7 rounded-lg bg-emerald-600/20 border border-emerald-500/30 flex items-center justify-center flex-shrink-0"><i data-lucide="folder-cog" class="w-3.5 h-3.5 text-emerald-400"></i></div><h3 class="text-sm font-semibold text-white">ตำแหน่งเก็บข้อมูลในเครื่อง</h3></div>' +
-    '<p class="text-xs text-slate-400 mb-3 leading-relaxed">เลือกโฟลเดอร์ที่ต้องการ เช่น Documents\\DSR Data ระบบจะบันทึกข้อมูลทั้งหมดลงไฟล์ <span class="mono text-emerald-400">DSR_LIVE_DATA.json</span> อัตโนมัติทุกครั้งที่มีการแก้ไข โดยยังมีฐานข้อมูลสำรองภายในโปรแกรมเพื่อป้องกันข้อมูลสูญหาย</p>' +
-    '<div id="dsr-storage-info" class="mb-3 px-3 py-3 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-400">กำลังตรวจสอบพื้นที่จัดเก็บ…</div>' +
-    '<div class="grid sm:grid-cols-2 gap-2 mb-2">' +
-      '<button type="button" onclick="dsrChooseStorageFolder()" class="px-3 py-2.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="folder-open" class="w-4 h-4"></i>เลือก / เปลี่ยนโฟลเดอร์</button>' +
-      '<button type="button" onclick="dsrReconnectStorageFolder()" class="px-3 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="folder-check" class="w-4 h-4"></i>อนุญาตโฟลเดอร์อีกครั้ง</button>' +
-      '<button type="button" onclick="dsrSaveFolderSnapshot()" class="px-3 py-2.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="save" class="w-4 h-4"></i>Backup ลงโฟลเดอร์</button>' +
-    '</div>' +
+    '<div class="pt-5 border-t border-slate-700"><h3 class="text-sm font-semibold text-white mb-3">สำรองและกู้คืนข้อมูล</h3>' +
+    '<p class="text-xs text-slate-400 mb-3">ข้อมูลบันทึกในเบราว์เซอร์นี้ ไม่ส่งขึ้นคลาวด์ ไม่ซิงก์ข้ามเครื่อง กรุณาดาวน์โหลด Backup เก็บไว้สม่ำเสมอ</p>' +
     '<div class="grid sm:grid-cols-2 gap-2">' +
       '<button type="button" onclick="dsrDownloadBackup()" class="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="download" class="w-4 h-4"></i>ดาวน์โหลด Backup</button>' +
       '<label class="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"><i data-lucide="upload" class="w-4 h-4"></i>กู้คืนจากไฟล์<input type="file" accept=".json,application/json" class="hidden" onchange="dsrImportBackupFile(this)"></label>' +
-      '<button type="button" onclick="dsrRestoreFromStorageFolder()" class="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="history" class="w-4 h-4"></i>กู้จากโฟลเดอร์ที่เลือก</button>' +
-    '</div>' +
-    '<div class="mt-3 flex items-start justify-between gap-3"><p class="text-[11px] text-amber-400">ไฟล์หลักจะอัปเดตอัตโนมัติ ส่วนปุ่ม Backup ลงโฟลเดอร์จะสร้างไฟล์ย้อนหลังแยกไว้ในโฟลเดอร์ DSR_Backups</p><button type="button" onclick="dsrDisconnectStorageFolder()" class="text-[11px] text-red-400 hover:text-red-300 whitespace-nowrap">ยกเลิกโฟลเดอร์</button></div></div>' +
+    '</div></div>' +
     '<div class="pt-4 border-t border-slate-700 flex gap-3 justify-end"><button type="button" class="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm" onclick="navigate(\'dashboard\')">ยกเลิก</button><button type="submit" class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm flex items-center gap-2" id="set-submit"><i data-lucide="save" class="w-4 h-4"></i> บันทึก</button></div>' +
     '</form></div></div>';
   if (window.lucide) lucide.createIcons();
-  dsrUpdateGoogleSyncInfo();
-  dsrUpdateDriveStatus();
-  dsrUpdateStorageInfo();
-}
-
-async function dsrUpdateGoogleSyncInfo() {
-  var el = document.getElementById('dsr-google-sync-info');
-  if (!el || !window.dataSdk || !window.dataSdk.getSyncInfo) return;
-  try {
-    var info = await window.dataSdk.getSyncInfo();
-    if (!document.getElementById('dsr-google-sync-info')) return;
-    if (!info.configured) {
-      el.innerHTML = '<div class="text-amber-400 font-semibold mb-1">ยังไม่ได้เชื่อม Google</div><div>วาง Apps Script Web App URL แล้วกด “บันทึกการเชื่อมต่อ”</div>';
-      return;
-    }
-    if (!info.enabled) {
-      el.innerHTML = '<div class="text-slate-300 font-semibold mb-1">Google Sync ปิดอยู่</div><div>กดบันทึกเพื่อเก็บข้อมูลในเบราว์เซอร์ · คิวที่เคยบันทึกแล้วยังอยู่</div>';
-      return;
-    }
-    var last = info.lastSyncAt ? new Date(info.lastSyncAt).toLocaleString('th-TH') : 'ยังไม่เคยซิงก์';
-    var headline = info.active ? 'กำลังซิงก์ Google…' : info.uncertain ? 'ต้องตรวจสอบรายการใหม่ก่อนส่งซ้ำ' : info.error ? esc(info.error) : info.pending ? 'รอซิงก์ ' + info.pending + ' รายการ' : '● Google Sync พร้อมใช้งาน';
-    var color = info.uncertain || info.error || !info.online ? 'text-amber-400' : info.active ? 'text-sky-400' : 'text-emerald-400';
-    var help = '';
-    if (info.errorCode === 'proxy-failed') help = 'ปิดโปรแกรมแล้วเปิดจากไอคอน DSR+ Offline ใหม่ หากยังไม่หายให้ติดตั้งเวอร์ชันล่าสุดทับ';
-    else if (info.errorCode === 'proxy-invalid-target' || info.errorCode === 'http-404') help = 'ตรวจ URL ให้เป็น Web App URL ที่ลงท้ายด้วย /exec';
-    else if (info.errorCode === 'google-login-required' || info.errorCode === 'http-401' || info.errorCode === 'http-403') help = 'Deploy Apps Script ใหม่ โดยตั้ง Who has access เป็น Anyone แล้วนำ URL /exec มาใส่';
-    else if (info.errorCode === 'invalid-json' || info.errorCode === 'invalid-records') help = 'URL นี้ไม่ตอบเป็น DSR API กรุณาตรวจ Deployment ของ Apps Script';
-    else if (info.error) help = 'ข้อมูลยังอยู่ในเครื่อง กด “ทดสอบ Google” เพื่อเช็กอีกครั้ง';
-    var detail = info.errorDetail ? '<div class="mt-1 text-slate-500 break-words">รายละเอียด: ' + esc(info.errorDetail) + '</div>' : '';
-    var route = info.transport === 'local-proxy' ? ' · ผ่านตัวส่ง DSR บนเครื่อง' : '';
-    el.innerHTML = '<div class="' + color + ' font-semibold mb-1">' + headline + '</div><div>คิว ' + info.pending + ' รายการ · ล่าสุด ' + last + (info.online ? '' : ' · ขณะนี้ Offline') + route + '</div>' + detail + (help ? '<div class="mt-2 text-amber-300">วิธีแก้: ' + help + '</div>' : '');
-  } catch (error) {
-    el.textContent = 'ไม่สามารถอ่านสถานะ Google Sync ได้';
-  }
-}
-
-async function dsrSaveGoogleSync() {
-  var input = document.getElementById('dsr-google-url');
-  var checkbox = document.getElementById('dsr-google-enabled');
-  if (!input || !checkbox || !window.dataSdk) return;
-  var value = String(input.value || '').trim();
-  if (checkbox.checked && !/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec(?:[?#].*)?$/i.test(value)) {
-    showToast('URL ต้องเป็น Apps Script Web App และลงท้ายด้วย /exec', 'error');
-    return;
-  }
-  var saved = await window.dataSdk.setUrl(value);
-  if (!saved || !saved.isOk) { showToast('บันทึก URL ไม่สำเร็จ', 'error'); return; }
-  await window.dataSdk.setSyncEnabled(checkbox.checked);
-  showToast(checkbox.checked ? (saved.changedWithPending ? 'เปลี่ยน URL แล้ว · กำลังส่งคิวเดิมไป Google' : 'บันทึกแล้ว · ระบบกำลังซิงก์เบื้องหลัง') : 'บันทึกแล้ว · ปิด Google Sync');
-  dsrUpdateGoogleSyncInfo();
-}
-
-async function dsrTestGoogleSync() {
-  if (!window.dataSdk || !window.dataSdk.testConnection) return;
-  var info = await window.dataSdk.getSyncInfo();
-  if (!info.configured || !info.enabled) {
-    showToast('กรุณาบันทึก URL /exec และเปิด Google Sync ก่อน', 'error');
-    return;
-  }
-  showToast('กำลังทดสอบ Google…');
-  var result = await window.dataSdk.testConnection();
-  if (result && result.isOk) showToast('เชื่อม Google สำเร็จ · พบข้อมูล ' + result.count + ' รายการ');
-  else showToast('ยังเชื่อม Google ไม่ได้ · ดูวิธีแก้ในกรอบสถานะ', 'error');
-  dsrUpdateGoogleSyncInfo();
-}
-
-async function dsrRetryGoogleSync() {
-  if (!window.dataSdk || !window.dataSdk.retryUpdates) return;
-  var retry = document.getElementById('dsr-retry-save');
-  if (retry) retry.disabled = true;
-  showToast('กำลังส่งข้อมูลไป Google อีกครั้ง…');
-  try {
-    var result = await window.dataSdk.retryUpdates();
-    if (result && result.isOk) showToast('ส่งข้อมูลไป Google สำเร็จ');
-    else showToast('ยังส่ง Google ไม่ได้ · ข้อมูลในเครื่องยังอยู่ครบ', 'error');
-  } finally {
-    if (retry) retry.disabled = false;
-    dsrUpdateGoogleSyncInfo();
-  }
-}
-
-async function dsrSyncGoogleNow() {
-  if (!window.dataSdk || !window.dataSdk.syncNow) return;
-  var info = await window.dataSdk.getSyncInfo();
-  if (!info.configured || !info.enabled) {
-    showToast('กรุณาใส่ URL และเปิด Google Sync ก่อน', 'error');
-    return;
-  }
-  var result = await window.dataSdk.syncNow();
-  if (result && result.isOk) showToast('Google Sync สำเร็จ');
-  else showToast('ยังซิงก์ไม่ได้ · ข้อมูลและคิวยังอยู่ในเครื่อง', 'error');
-  dsrUpdateGoogleSyncInfo();
-}
-
-function dsrFormatBytes(bytes) {
-  bytes = Number(bytes) || 0;
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
-  return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
-}
-
-async function dsrUpdateStorageInfo() {
-  var el = document.getElementById('dsr-storage-info');
-  if (!el || !window.dataSdk || !window.dataSdk.storageInfo) return;
-  try {
-    var info = await window.dataSdk.storageInfo();
-    if (!document.getElementById('dsr-storage-info')) return;
-    var quotaText = info.quota ? ' · ใช้พื้นที่ ' + dsrFormatBytes(info.usage) + ' จาก ' + dsrFormatBytes(info.quota) : '';
-    var folder = info.folder || {};
-    var folderHtml = '';
-    if (!folder.supported) {
-      folderHtml = '<div class="text-amber-400 font-semibold mb-1">เบราว์เซอร์นี้ยังเลือกโฟลเดอร์ไม่ได้</div><div>กรุณาเปิด DSR ด้วย Microsoft Edge หรือ Google Chrome เวอร์ชันล่าสุด</div>';
-    } else if (!folder.configured) {
-      folderHtml = '<div class="text-amber-400 font-semibold mb-1">ยังไม่ได้เลือกโฟลเดอร์จัดเก็บ</div><div>กด “เลือก / เปลี่ยนโฟลเดอร์” แล้วเลือกตำแหน่งที่ต้องการเก็บข้อมูล</div>';
-    } else if (folder.permission === 'granted') {
-      var savedText = folder.lastSavedAt ? ' · บันทึกล่าสุด ' + new Date(folder.lastSavedAt).toLocaleString('th-TH') : '';
-      folderHtml = '<div class="text-emerald-400 font-semibold mb-1">● บันทึกอัตโนมัติอยู่</div><div class="text-slate-200">' + esc(folder.name || 'โฟลเดอร์ที่เลือก') + '\\' + esc(folder.fileName || 'DSR_LIVE_DATA.json') + '</div><div class="text-slate-500 mt-1">ทุกการแก้ไขจะถูกเขียนลงไฟล์นี้' + savedText + '</div>';
-    } else {
-      folderHtml = '<div class="text-amber-400 font-semibold mb-1">เลือกโฟลเดอร์แล้ว แต่ต้องอนุญาตการเข้าถึงอีกครั้ง</div><div>' + esc(folder.name || 'โฟลเดอร์ที่เลือก') + ' · กดปุ่ม “อนุญาตโฟลเดอร์อีกครั้ง”</div>';
-    }
-    el.innerHTML = folderHtml + '<div class="border-t border-slate-800 mt-3 pt-2 text-slate-500">ฐานข้อมูลภายใน ' + info.count + ' รายการ' + quotaText + (info.persisted ? ' · ป้องกันการล้างอัตโนมัติแล้ว' : '') + '</div>';
-  } catch (error) {
-    el.textContent = 'ไม่สามารถอ่านข้อมูลพื้นที่จัดเก็บได้';
-  }
-}
-
-async function dsrChooseStorageFolder() {
-  if (!window.dataSdk || !window.dataSdk.chooseStorageFolder) return;
-  var result = await window.dataSdk.chooseStorageFolder();
-  if (result && result.cancelled) return;
-  if (!result || !result.isOk) {
-    showToast((result && result.error) || 'เลือกโฟลเดอร์ไม่สำเร็จ', 'error');
-  } else {
-    showToast('ตั้งค่าโฟลเดอร์แล้ว · บันทึกข้อมูล ' + result.count + ' รายการ');
-  }
-  dsrUpdateStorageInfo();
-}
-
-async function dsrReconnectStorageFolder() {
-  if (!window.dataSdk || !window.dataSdk.reconnectStorageFolder) return;
-  var result = await window.dataSdk.reconnectStorageFolder();
-  if (!result || !result.isOk) {
-    showToast((result && result.error) || 'เชื่อมต่อโฟลเดอร์ไม่สำเร็จ', 'error');
-  } else {
-    showToast('เชื่อมต่อและบันทึกลงโฟลเดอร์แล้ว');
-  }
-  dsrUpdateStorageInfo();
-}
-
-async function dsrSaveFolderSnapshot() {
-  if (!window.dataSdk || !window.dataSdk.saveFolderSnapshot) return;
-  var result = await window.dataSdk.saveFolderSnapshot();
-  if (!result || !result.isOk) {
-    showToast((result && result.error) || 'สร้าง Backup ไม่สำเร็จ', 'error');
-  } else {
-    showToast('สร้าง ' + result.fileName + ' แล้ว · ' + result.count + ' รายการ');
-  }
-  dsrUpdateStorageInfo();
-}
-
-function dsrRestoreFromStorageFolder() {
-  if (!window.dataSdk || !window.dataSdk.restoreFromStorageFolder) return;
-  showConfirm('กู้ข้อมูลจาก DSR_LIVE_DATA.json ในโฟลเดอร์ที่เลือก?\n\nข้อมูลปัจจุบันในโปรแกรมจะถูกเขียนทับทั้งหมด', async function () {
-    var result = await window.dataSdk.restoreFromStorageFolder();
-    if (!result || !result.isOk) {
-      showToast((result && result.error) || 'กู้ข้อมูลจากโฟลเดอร์ไม่สำเร็จ', 'error');
-      return;
-    }
-    showToast('กู้ข้อมูลสำเร็จ · ' + result.count + ' รายการ');
-    setTimeout(function () { location.reload(); }, 500);
-  });
-}
-
-function dsrDisconnectStorageFolder() {
-  if (!window.dataSdk || !window.dataSdk.disconnectStorageFolder) return;
-  showConfirm('ยกเลิกการบันทึกอัตโนมัติลงโฟลเดอร์นี้?\n\nข้อมูลเดิมในโฟลเดอร์จะไม่ถูกลบ และข้อมูลในโปรแกรมยังคงอยู่', async function () {
-    var result = await window.dataSdk.disconnectStorageFolder();
-    if (!result || !result.isOk) {
-      showToast((result && result.error) || 'ยกเลิกโฟลเดอร์ไม่สำเร็จ', 'error');
-      return;
-    }
-    showToast('ยกเลิกโฟลเดอร์แล้ว ข้อมูลเดิมยังอยู่ครบ');
-    dsrUpdateStorageInfo();
-  });
 }
 
 async function dsrDownloadBackup() {
@@ -4381,7 +4040,6 @@ async function saveSettings(e) {
       company_bank_info: cfg.company_bank_info || defaultConfig.company_bank_info,
       company_prepare_name: document.getElementById('set-prepare-name').value,
       company_prepare_title: document.getElementById('set-prepare-title').value,
-      google_drive_client_id: (document.getElementById('dsr-drive-client-id') || {}).value || cfg.google_drive_client_id || '',
       company_logo_data: logoData === null ? getAssetValue('company_logo_data') : logoData,
       company_signature_data: signatureData === null ? getAssetValue('company_signature_data') : signatureData,
       company_stamp_data: stampData === null ? getAssetValue('company_stamp_data') : stampData,
@@ -4389,7 +4047,6 @@ async function saveSettings(e) {
     };
     const result = await window.elementSdk.setConfig(nextConfig);
     if (!result || !result.isOk) throw new Error((result && result.error) || 'บันทึกไม่สำเร็จ');
-    if (window.dsrDrive) window.dsrDrive.configure(nextConfig.google_drive_client_id);
     dsrClearFormDraft(e.currentTarget);
     showToast('บันทึกการตั้งค่าสำเร็จ');
     setTimeout(function() { navigate('dashboard'); }, 1000);
@@ -5061,25 +4718,14 @@ function dsrShowSyncStatus(state) {
     (typeof _qt !== 'undefined' && Object.values(_qt).some(function (st) { return !!st.debounce; }));
   var unsavedCount = window.dataSdk && window.dataSdk.draftCount ? window.dataSdk.draftCount() : 0;
   var saveAll = document.getElementById('dsr-save-all');
-  if (saveAll && !saveAll.disabled) saveAll.textContent = unsavedCount ? 'บันทึกทั้งหมด / ส่ง Google (' + unsavedCount + ')' : 'บันทึกทั้งหมด / ส่ง Google';
-  label.textContent = unsavedCount || draftSaving || _dsrManualPending.size || _dsrMemoryFormDrafts.size || _dsrDirty ? 'ฉบับร่างบนหน้าจอ · ยังไม่บันทึกและยังไม่ส่ง Google' :
-    Date.now() < _dsrDraftSavedUntil ? 'ฉบับร่างพร้อม · ยังไม่บันทึก' :
-    _dsrManualPending.size ? 'แก้ไขในเครื่องแล้ว · กด Save เพื่อส่ง Google (' + _dsrManualPending.size + ')' :
-    state.pending || state.folderSaving ? 'กำลังบันทึกลงเครื่อง…' + (state.pending ? ' (' + state.pending + ')' : '') :
-    state.failed ? 'บันทึกในเครื่องไม่สำเร็จ' :
-    state.reading ? 'กำลังโหลดข้อมูลจากเครื่อง…' :
-    state.error ? 'เปิดฐานข้อมูลในเครื่องไม่ได้' :
-    state.syncActive ? 'บันทึกในเครื่องแล้ว · กำลังซิงก์ Google…' :
-    state.syncUncertain ? 'บันทึกในเครื่องแล้ว · ต้องตรวจคิว Google (' + state.syncPending + ')' :
-    state.syncError ? 'บันทึกในเครื่องแล้ว · ' + (state.syncErrorMessage || 'รอซิงก์ Google') :
-    state.syncEnabled && state.syncConfigured && state.syncPending ? 'บันทึกในเครื่องแล้ว · รอซิงก์ Google ' + state.syncPending :
-    state.syncEnabled && state.syncConfigured ? 'บันทึกในเครื่องแล้ว · Google Sync พร้อม' :
-    state.folderError || (state.folderConfigured && state.folderPermission !== 'granted') ? 'บันทึกฐานข้อมูลแล้ว · โฟลเดอร์รออนุญาต' :
-    state.folderConfigured ? 'OFFLINE · บันทึกที่ ' + state.folderName : 'OFFLINE · บันทึกในเครื่องแล้ว';
-  label.style.color = _dsrManualPending.size ? '#fb923c' : (state.failed || state.error || state.syncError || state.syncUncertain || state.folderError || (state.folderConfigured && state.folderPermission !== 'granted') ? '#fbbf24' : '#94a3b8');
-  if (retry) { retry.hidden = !(state.failed || state.syncError || state.syncUncertain); retry.disabled = !!state.pending; }
-  if (refresh) refresh.disabled = !!(state.pending || state.reading || state.folderSaving || state.failed || state.syncActive);
-  if (dot) dot.style.display = draftSaving || state.pending || state.reading || state.folderSaving || state.syncActive ? 'block' : 'none';
+  if (saveAll && !saveAll.disabled) saveAll.textContent = unsavedCount ? 'บันทึกทั้งหมด (' + unsavedCount + ')' : 'บันทึกทั้งหมด';
+  label.textContent = unsavedCount || draftSaving || _dsrManualPending.size || _dsrMemoryFormDrafts.size || _dsrDirty
+    ? 'มีการแก้ไข · กรุณากดบันทึกทั้งหมด'
+    : state.failed || state.error ? 'บันทึกในเครื่องไม่สำเร็จ กรุณาสำรองข้อมูลและลองอีกครั้ง'
+    : state.pending ? 'กำลังบันทึก…' : state.reading ? 'กำลังโหลด…' : 'บันทึกในเบราว์เซอร์นี้';
+  label.style.color = state.failed || state.error ? '#fbbf24' : '#94a3b8';
+  if (refresh) refresh.disabled = !!(state.pending || state.reading);
+  if (dot) dot.style.display = draftSaving || state.pending || state.reading ? 'block' : 'none';
 }
 async function dsrDoRefresh() {
   var wasDirty = _dsrDirty;
@@ -5087,10 +4733,10 @@ async function dsrDoRefresh() {
   var result = await window.dataSdk.refresh();
   if (!result.isOk) {
     _dsrDirty = _dsrDirty || wasDirty;
-    showToast('ยังซิงก์ไม่ได้ · ข้อมูลในเครื่องไม่หาย', 'error');
+    showToast('ยังโหลดข้อมูลไม่ได้ · ข้อมูลในเครื่องไม่หาย', 'error');
   } else {
     renderPage();
-    showToast(window.dataSdk.getUrl && window.dataSdk.getUrl() ? 'ซิงก์ข้อมูลแล้ว' : 'โหลดข้อมูลจากเครื่องแล้ว');
+    showToast('โหลดข้อมูลจากเครื่องแล้ว');
   }
   return result;
 }
@@ -5123,13 +4769,13 @@ window.openDSRPrintOverlay = openDSRPrintOverlay;
       if (deviceConfig && Object.keys(deviceConfig).length && window.elementSdk) {
         Object.assign(window.elementSdk.config, deviceConfig);
       }
-      // Load config from Sheets only if user has never saved locally
+      // Restore legacy company settings only if no device settings exist.
       var cfgRecord = data.find(function(r){ return r.record_type === 'config'; });
       if (cfgRecord && window.elementSdk) {
         var hasLocalConfig = false;
         try { hasLocalConfig = !!localStorage.getItem('DSR_config'); } catch(e) {}
         if (!hasLocalConfig) {
-          // First time on this device — load from Sheets
+          // First launch after importing legacy records.
           var LOCAL_ONLY_KEYS = ['company_signature_data','company_logo_data','company_stamp_data','company_payment_qr_data','company_prepare_name','company_prepare_title'];
           var merged = Object.assign({}, cfgRecord);
           delete merged.__backendId; delete merged.record_type;
@@ -5138,8 +4784,7 @@ window.openDSRPrintOverlay = openDSRPrintOverlay;
           try { localStorage.setItem('DSR_config', JSON.stringify(window.elementSdk.config)); } catch(e) {}
         }
       }
-      // Render once from the local database. Background Google updates only replace
-      // the data model, so they never steal focus or make the form jump while typing.
+      // Local writes update the model without interrupting active forms.
       if (!window._dsrInitialDataRendered) {
         window._dsrInitialDataRendered = true;
         safeRenderPage();
@@ -5148,13 +4793,8 @@ window.openDSRPrintOverlay = openDSRPrintOverlay;
   });
   if (!result.isOk) {
     console.error('Data SDK init failed');
-  } else if (window.dataSdk.storageFolderInfo) {
-    var firstFolderInfo = await window.dataSdk.storageFolderInfo();
-    if (firstFolderInfo.supported && !firstFolderInfo.configured) {
-      navigate('settings');
-      setTimeout(function () { showToast('ตั้งค่าโฟลเดอร์ในเครื่อง และใส่ Google Apps Script URL ได้ที่หน้านี้'); }, 150);
-    }
   }
+
 })();
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
@@ -6714,13 +6354,7 @@ async function dsrSaveAll(appliedForm) {
       _dsrManualPending.clear(); _dsrDirty = false;
       Object.values(_qt).forEach(function(st){st.dirty = false;});
     }
-    showToast('บันทึกแล้ว · กำลังตรวจการส่ง Google');
-    window.dataSdk.getSyncInfo().then(function(info){
-      if (!info.enabled || !info.configured) { showToast('บันทึกในเบราว์เซอร์แล้ว · ยังไม่ได้เชื่อม Google', 'error'); return; }
-      return window.dataSdk.sendSavedToGoogle().then(function(sync){
-        showToast(sync && sync.isOk && !sync.pending ? 'บันทึกและส่ง Google แล้ว' : 'บันทึกในเบราว์เซอร์แล้ว · ส่ง Google ยังไม่สำเร็จ', sync && sync.isOk && !sync.pending ? 'success' : 'error');
-      });
-    }).catch(function(){showToast('บันทึกในเบราว์เซอร์แล้ว · กรุณาตรวจการเชื่อมต่อ Google', 'error');});
+    showToast('บันทึกข้อมูลในเบราว์เซอร์แล้ว');
   } catch(error) { showToast(error.message || 'บันทึกไม่สำเร็จ · ฉบับร่างยังอยู่', 'error'); }
   finally { button.disabled = false; dsrShowSyncStatus(_dsrLastSyncState || {}); }
 }

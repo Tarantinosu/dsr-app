@@ -345,6 +345,7 @@
     }
 
     function scheduleLiveFolderSave() {
+      if (options.mirrorFolder === false) return;
       if (!folderName) return;
       folderSaveScheduled = true;
       emitStatus();
@@ -504,7 +505,7 @@
         var raw = await file.text();
         var backup = JSON.parse(raw);
         var records = await applyBackupObject(backup);
-        await saveLiveToFolder(false);
+        if (options.mirrorFolder !== false) await saveLiveToFolder(false);
         emitStatus();
         return { isOk: true, count: records.length };
       } catch (error) {
@@ -610,7 +611,7 @@
           setMemory(records);
           handler.onDataChanged(clone(records));
           var folderInfo = await storageFolderInfo();
-          if (folderInfo.configured && folderInfo.permission === 'granted') {
+          if (options.mirrorFolder !== false && folderInfo.configured && folderInfo.permission === 'granted') {
             await saveLiveToFolder(false);
           }
           lastError = null;
