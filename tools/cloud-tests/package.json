@@ -1,0 +1,7 @@
+{
+  "name": "dsr-cloud-schema-tests",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test schema.test.mjs" },
+  "devDependencies": { "@electric-sql/pglite": "0.5.11" }
+}
