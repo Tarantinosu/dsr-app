@@ -28,3 +28,5 @@ python3 -m unittest discover -s tests -v
 ```
 
 Browser tests ต้องมี Python Playwright และ Chromium ที่ `/usr/bin/chromium` ในสภาพแวดล้อมพัฒนานี้ ใช้ข้อมูลจำลองและปิดคำขอ HTTPS ภายนอก ไม่แก้บัญชีหรือข้อมูลจริง
+
+รายละเอียดการแก้จาก audit และข้อจำกัดที่ยังคงอยู่: [AUDIT_FIXES_TH.md](AUDIT_FIXES_TH.md)

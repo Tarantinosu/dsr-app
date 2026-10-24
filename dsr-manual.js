@@ -50,6 +50,20 @@
       if(saving)return saving;
       var snapshot=Array.from(drafts.values()).map(copy);
       saving=(async function(){
+        if (typeof base.commitOperations === 'function') {
+          var batch = snapshot.map(function(op){op.record.__backendId=idOf(op.record.__backendId);return op;});
+          batch.forEach(function(op){inflight.add(op.record.__backendId);});
+          var committed;
+          try { committed = await base.commitOperations(batch); }
+          finally { batch.forEach(function(op){inflight.delete(idOf(op.record.__backendId));}); }
+          if (!committed || !committed.isOk) return committed || {isOk:false,error:'save-failed'};
+          batch.forEach(function(op){
+            var id=idOf(op.record.__backendId),latest=drafts.get(id);
+            if(latest && latest.version===op.version) drafts.delete(id);
+            else if(latest && op.action==='create' && latest.action==='create') latest.action='update';
+          });
+          return committed;
+        }
         for(var i=0;i<snapshot.length;i++){
           var op=snapshot[i],id=idOf(op.record.__backendId);op.record.__backendId=id;
           inflight.add(id);

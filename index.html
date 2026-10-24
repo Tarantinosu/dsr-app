@@ -9,8 +9,8 @@
   <link rel="stylesheet" href="assets/tailwind.css">
   <script src="assets/lucide.min.js"></script>
   <script src="assets/xlsx.full.min.js"></script>
-  <script src="dsr-local.js?v=20261024-local"></script>
-  <script src="dsr-manual.js?v=20261024-local"></script>
+  <script src="dsr-local.js?v=20261024-audit-fixes"></script>
+  <script src="dsr-manual.js?v=20261024-audit-fixes"></script>
   <script>
 // ===== OFFLINE SDK — data stays on this computer =====
 (function () {
@@ -330,6 +330,11 @@ const defaultConfig = {
 };
 
 // ===== HELPERS =====
+function dsrLocalDate(value) {
+  var date = value == null ? new Date() : new Date(value);
+  return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+}
+
 function roundHU(n) { return Math.round((n + Number.EPSILON) * 100) / 100; }
 function roundPct(n) { return Math.round(((Number(n) || 0) + Number.EPSILON) * 1000000) / 1000000; }
 function fmt(n) { return roundHU(n).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
@@ -423,7 +428,7 @@ function showConfirm(msg, onYes) {
   const d = document.getElementById('confirm-dialog');
   d.style.display = 'flex';
   d.innerHTML = '<div class="bg-slate-800 rounded-xl p-6 max-w-sm border border-slate-700 fade-in">' +
-    '<p class="text-slate-200 mb-4 whitespace-pre-line">' + msg + '</p>' +
+    '<p class="text-slate-200 mb-4 whitespace-pre-line">' + esc(msg) + '</p>' +
     '<div class="flex gap-3 justify-end">' +
     '<button class="px-4 py-2 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600 text-sm" id="confirm-no">ยกเลิก</button>' +
     '<button class="px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-500 text-sm" id="confirm-yes">ยืนยัน</button>' +
@@ -436,9 +441,9 @@ function showConfirm(msg, onYes) {
 function showDateConfirm(msg, btnLabel, btnColor, onYes) {
   const d = document.getElementById('confirm-dialog');
   d.style.display = 'flex';
-  const today = new Date().toISOString().slice(0, 10);
+  const today = dsrLocalDate();
   d.innerHTML = '<div class="bg-slate-800 rounded-xl p-6 max-w-sm w-full border border-slate-700 fade-in">' +
-    '<p class="text-slate-200 mb-4 whitespace-pre-line">' + msg + '</p>' +
+    '<p class="text-slate-200 mb-4 whitespace-pre-line">' + esc(msg) + '</p>' +
     '<div class="mb-4"><label class="text-xs text-slate-400 block mb-1">วันที่</label>' +
     '<input type="date" id="dc-date" value="' + today + '" class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none"></div>' +
     '<div class="flex gap-3 justify-end">' +
@@ -451,7 +456,7 @@ function showDateConfirm(msg, btnLabel, btnColor, onYes) {
     if (!dateVal) { return; }
     d.style.display = 'none';
     // แปลง YYYY-MM-DD → ISO string เที่ยงวัน (ไม่ให้ timezone เลื่อนวัน)
-    onYes(new Date(dateVal + 'T12:00:00').toISOString());
+    Promise.resolve().then(function() { return onYes(new Date(dateVal + 'T12:00:00').toISOString()); }).catch(function(error) { showToast(error.message || 'ทำรายการไม่สำเร็จ', 'error'); });
   };
 }
 
@@ -494,6 +499,13 @@ function nextDocNum(prefix) {
   return prefix + year + '-' + String(max + 1).padStart(3, '0');
 }
 
+async function dsrReserveDocNumber(prefix, field, recordId) {
+  var suggested = nextDocNum(prefix);
+  var fullPrefix = prefix + getYear();
+  var suggestedMax = (parseInt(suggested.split('-').pop(), 10) || 1) - 1;
+  return window.dataSdk.reserveDocumentNumber(fullPrefix, field, recordId, suggestedMax);
+}
+
 async function addLog(projId, action, detail) {
   await window.dataSdk.create({
     record_type: 'log', project_id: projId || '',
@@ -504,6 +516,7 @@ async function addLog(projId, action, detail) {
 
 // ===== NAVIGATION =====
 function navigate(page, ctx) {
+  dsrFlushFormDrafts();
   if (page !== 'project-detail' || ctx !== window._navCtx) {
     _activeTab = 'qt';
   }
@@ -516,6 +529,7 @@ function navigate(page, ctx) {
 }
 
 function renderPage() {
+  dsrFlushFormDrafts();
   _dsrDirty = false;
   const main = document.getElementById('main-content');
   const ctx = window._navCtx;
@@ -611,7 +625,7 @@ function renderDashboard(el) {
       const total = q ? q.grand_total || 0 : 0;
       const pct = total > 0 ? Math.round(paidAmt / total * 100) : 0;
       return '<div class="flex items-center gap-2 p-2 md:p-3 rounded-lg bg-slate-800/50 hover:bg-slate-800 cursor-pointer transition text-xs md:text-sm" onclick="navigate(\'project-detail\',\'' + p.project_id + '\')">' +
-        '<div class="flex-1 min-w-0"><div class="font-medium text-white truncate">' + (p.project_name||'Untitled') + '</div><div class="text-slate-500 truncate">' + (p.client_name||'-') + '</div></div>' +
+        '<div class="flex-1 min-w-0"><div class="font-medium text-white truncate">' + esc(p.project_name||'Untitled') + '</div><div class="text-slate-500 truncate">' + esc(p.client_name||'-') + '</div></div>' +
         '<div class="text-right flex-shrink-0"><div class="mono text-white">' + fmt(total) + '</div><div class="text-slate-500">' + pct + '%</div></div></div>';
     }).join('') + '</div>') +
     '</div></div>';
@@ -659,20 +673,20 @@ function profileCard(p, isGrid) {
   var edit = '<button class="text-slate-500 hover:text-blue-400 p-1" onclick="editProfile(\'' + p.__backendId + '\')"><i data-lucide="pencil" class="w-3.5 h-3.5"></i></button>';
   var del = '<button class="text-slate-500 hover:text-red-400 p-1" onclick="deleteProfile(\'' + p.__backendId + '\')"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>';
   if (isGrid) {
-    return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col gap-2 card-hover" data-role="' + p.role + '" data-search="' + srch + '">' +
-      '<div class="flex items-start justify-between"><div class="w-10 h-10 rounded-full ' + color + ' flex items-center justify-center font-bold">' + (p.name||'?')[0] + '</div>' + badge + '</div>' +
-      '<div class="font-semibold text-sm text-white truncate">' + (p.name||'-') + '</div>' +
+    return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col gap-2 card-hover" data-role="' + p.role + '" data-search="' + esc(srch) + '">' +
+      '<div class="flex items-start justify-between"><div class="w-10 h-10 rounded-full ' + color + ' flex items-center justify-center font-bold">' + esc((p.name||'?')[0]) + '</div>' + badge + '</div>' +
+      '<div class="font-semibold text-sm text-white truncate">' + esc(p.name||'-') + '</div>' +
       '<div class="text-xs text-slate-500">' + (p.entity_type==='corporate'?'นิติบุคคล':'บุคคลธรรมดา') + ' · ' + (p.vat_enabled ? 'VAT 7%' : 'Non VAT') + '</div>' +
-      '<div class="text-xs text-slate-400 font-mono">' + (p.tax_id||'ไม่มีเลขภาษี') + '</div>' +
+      '<div class="text-xs text-slate-400 font-mono">' + esc(p.tax_id||'ไม่มีเลขภาษี') + '</div>' +
       (p.email ? '<div class="text-xs text-slate-500 truncate">' + p.email + '</div>' : '') +
       '<div class="flex justify-end gap-1 border-t border-slate-800 pt-2 mt-1">' + edit + del + '</div>' +
       '</div>';
   }
-  return '<div class="flex items-center gap-4 p-4 bg-slate-900 border border-slate-800 rounded-xl card-hover" data-role="' + p.role + '" data-search="' + srch + '">' +
-    '<div class="w-10 h-10 rounded-full ' + color + ' flex items-center justify-center font-bold text-sm">' + (p.name||'?')[0] + '</div>' +
-    '<div class="flex-1 min-w-0"><div class="text-sm font-medium text-white">' + (p.name||'-') + '</div>' +
-    '<div class="text-xs text-slate-500">' + (p.entity_type==='corporate'?'นิติบุคคล':'บุคคลธรรมดา') + ' · ' + (p.tax_id||'ไม่มีเลขภาษี') + '</div>' +
-    '<div class="text-xs text-slate-500">' + (p.email||'') + (p.phone?' · '+p.phone:'') + '</div></div>' +
+  return '<div class="flex items-center gap-4 p-4 bg-slate-900 border border-slate-800 rounded-xl card-hover" data-role="' + p.role + '" data-search="' + esc(srch) + '">' +
+    '<div class="w-10 h-10 rounded-full ' + color + ' flex items-center justify-center font-bold text-sm">' + esc((p.name||'?')[0]) + '</div>' +
+    '<div class="flex-1 min-w-0"><div class="text-sm font-medium text-white">' + esc(p.name||'-') + '</div>' +
+    '<div class="text-xs text-slate-500">' + (p.entity_type==='corporate'?'นิติบุคคล':'บุคคลธรรมดา') + ' · ' + esc(p.tax_id||'ไม่มีเลขภาษี') + '</div>' +
+    '<div class="text-xs text-slate-500">' + esc(p.email||'') + esc(p.phone?' · '+p.phone:'') + '</div></div>' +
     badge + edit + del + '</div>';
 }
 
@@ -698,7 +712,7 @@ function showProfileForm() {
     '<div class="col-span-2"><label class="text-xs text-slate-400">ที่อยู่</label><input id="pf-addr" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="ที่อยู่ตามทะเบียนภาษี"></div>' +
     '<div><label class="text-xs text-slate-400">อีเมล</label><input id="pf-email" type="email" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="email@example.com"></div>' +
     '<div><label class="text-xs text-slate-400">โทรศัพท์</label><input id="pf-phone" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="0XX-XXX-XXXX"></div>' +
-    '<div class="col-span-2 flex gap-2 justify-end"><button type="button" class="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm" onclick="document.getElementById(\'profile-form-area\').innerHTML=\'\'">ยกเลิก</button><button type="submit" class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm" id="pf-submit">บันทึก</button></div>' +
+    '<div class="col-span-2 flex gap-2 justify-end"><button type="button" class="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm" onclick="dsrCancelForm(\'profile-form-area\')">ยกเลิก</button><button type="submit" class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm" id="pf-submit">บันทึก</button></div>' +
     '</form></div>';
   if (window.lucide) lucide.createIcons();
   setTimeout(function () { dsrRestoreFormDrafts(); }, 0);
@@ -742,15 +756,15 @@ function editProfile(id) {
     '<form id="profile-form" data-dsr-live-save="profile" oninput="dsrQueueProfileAutosave(\'' + id + '\')" onchange="dsrQueueProfileAutosave(\'' + id + '\')" onsubmit="updateProfile(event,\'' + id + '\')" class="grid grid-cols-2 gap-3">' +
     '<div><label class="text-xs text-slate-400">ประเภท</label><select id="pf-role" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="client"' + (p.role==='client'?' selected':'') + '>ลูกค้า</option><option value="partner"' + (p.role==='partner'?' selected':'') + '>พาร์ทเนอร์</option></select></div>' +
     '<div><label class="text-xs text-slate-400">สถานะ</label><select id="pf-entity" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="individual"' + (p.entity_type==='individual'?' selected':'') + '>บุคคลธรรมดา</option><option value="corporate"' + (p.entity_type==='corporate'?' selected':'') + '>นิติบุคคล</option></select></div>' +
-    '<div class="col-span-2"><label class="text-xs text-slate-400">ชื่อ / บริษัท</label><input id="pf-name" required value="' + (p.name||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"></div>' +
-    '<div><label class="text-xs text-slate-400">เลขผู้เสียภาษี (13 หลัก)</label><input id="pf-tax" value="' + (p.tax_id||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white mono" maxlength="13"></div>' +
+    '<div class="col-span-2"><label class="text-xs text-slate-400">ชื่อ / บริษัท</label><input id="pf-name" required value="' + esc(p.name||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"></div>' +
+    '<div><label class="text-xs text-slate-400">เลขผู้เสียภาษี (13 หลัก)</label><input id="pf-tax" value="' + esc(p.tax_id||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white mono" maxlength="13"></div>' +
     '<div><label class="text-xs text-slate-400">อัตราหัก ณ ที่จ่าย (%)</label><select id="pf-wht" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="0"' + (p.default_wht==0?' selected':'') + '>0%</option><option value="1"' + (p.default_wht==1?' selected':'') + '>1%</option><option value="3"' + (p.default_wht==3?' selected':'') + '>3%</option><option value="5"' + (p.default_wht==5?' selected':'') + '>5%</option></select></div>' +
     '<div><label class="text-xs text-slate-400">จด VAT</label><select id="pf-vat-enabled" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="false"' + (!p.vat_enabled?' selected':'') + '>ไม่จด VAT</option><option value="true"' + (p.vat_enabled?' selected':'') + '>จด VAT 7%</option></select></div>' +
     '<div><label class="text-xs text-slate-400">VAT (%)</label><input id="pf-vat-rate" type="number" value="' + (p.vat_rate||7) + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white mono"></div>' +
-    '<div class="col-span-2"><label class="text-xs text-slate-400">ที่อยู่</label><input id="pf-addr" value="' + (p.address||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"></div>' +
-    '<div><label class="text-xs text-slate-400">อีเมล</label><input id="pf-email" type="email" value="' + (p.email||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"></div>' +
-    '<div><label class="text-xs text-slate-400">โทรศัพท์</label><input id="pf-phone" value="' + (p.phone||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"></div>' +
-    '<div class="col-span-2 flex gap-2 justify-end"><button type="button" class="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm" onclick="document.getElementById(\'profile-form-area\').innerHTML=\'\'">ยกเลิก</button><button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm" id="pf-submit">บันทึกการแก้ไข</button></div>' +
+    '<div class="col-span-2"><label class="text-xs text-slate-400">ที่อยู่</label><input id="pf-addr" value="' + esc(p.address||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"></div>' +
+    '<div><label class="text-xs text-slate-400">อีเมล</label><input id="pf-email" type="email" value="' + esc(p.email||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"></div>' +
+    '<div><label class="text-xs text-slate-400">โทรศัพท์</label><input id="pf-phone" value="' + esc(p.phone||'') + '" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"></div>' +
+    '<div class="col-span-2 flex gap-2 justify-end"><button type="button" class="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm" onclick="dsrCancelForm(\'profile-form-area\')">ยกเลิก</button><button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm" id="pf-submit">บันทึกการแก้ไข</button></div>' +
     '</form></div>';
   document.getElementById('profile-form-area').scrollIntoView({ behavior: 'smooth' });
   if (window.lucide) lucide.createIcons();
@@ -826,14 +840,14 @@ function renderProjects(el) {
     var allPaid = inst.length > 0 && inst.every(function(i){return i.status==='paid';});
     var doneBtn = allPaid ? '<button class="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs flex items-center gap-1" onclick="markProjectDone(\''+p.project_id+'\',event)"><i data-lucide="check" class="w-3 h-3"></i> เสร็จสิ้น</button>' : '';
     var nav = 'navigate(\'project-detail\',\'' + p.project_id + '\')';
-    if (isGrid) return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col gap-3 card-hover cursor-pointer" data-s="'+srch+'" onclick="'+nav+'">' +
+    if (isGrid) return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col gap-3 card-hover cursor-pointer" data-s="'+esc(srch)+'" onclick="'+nav+'">' +
       '<div class="flex items-start justify-between"><div class="w-10 h-10 rounded-lg bg-orange-900/50 text-orange-400 flex items-center justify-center"><i data-lucide="folder" class="w-5 h-5"></i></div><span class="'+badgeClass(ds)+'">'+ds+'</span></div>' +
-      '<div class="flex-1 min-w-0"><div class="text-sm font-semibold text-white leading-tight mb-0.5">'+(p.project_name||'Untitled')+'</div><div class="text-xs text-slate-500">'+(p.client_name||'-')+'</div></div>' +
+      '<div class="flex-1 min-w-0"><div class="text-sm font-semibold text-white leading-tight mb-0.5">'+esc(p.project_name||'Untitled')+'</div><div class="text-xs text-slate-500">'+esc(p.client_name||'-')+'</div></div>' +
       '<div class="border-t border-slate-800 pt-2 flex items-end justify-between"><div><div class="mono text-sm font-bold text-white">'+fmt(total)+'</div><div class="text-xs text-slate-500">'+inst.length+' งวด · '+fmt(paidAmt)+' จ่ายแล้ว</div></div>' +
       '<div onclick="event.stopPropagation()" class="flex items-center gap-1">'+doneBtn+delBtn+'</div></div></div>';
-    return '<div class="p-4 bg-slate-900 border border-slate-800 rounded-xl card-hover cursor-pointer flex items-center gap-4" data-s="'+srch+'" onclick="'+nav+'">' +
+    return '<div class="p-4 bg-slate-900 border border-slate-800 rounded-xl card-hover cursor-pointer flex items-center gap-4" data-s="'+esc(srch)+'" onclick="'+nav+'">' +
       '<div class="w-10 h-10 rounded-lg bg-orange-900/50 text-orange-400 flex items-center justify-center"><i data-lucide="folder" class="w-5 h-5"></i></div>' +
-      '<div class="flex-1 min-w-0"><div class="text-sm font-medium text-white">'+(p.project_name||'Untitled')+'</div><div class="text-xs text-slate-500">'+(p.client_name||'-')+' · '+fmtDate(p.created_at)+'</div></div>' +
+      '<div class="flex-1 min-w-0"><div class="text-sm font-medium text-white">'+esc(p.project_name||'Untitled')+'</div><div class="text-xs text-slate-500">'+esc(p.client_name||'-')+' · '+fmtDate(p.created_at)+'</div></div>' +
       '<div class="text-right mr-2"><div class="mono text-sm text-white">'+fmt(total)+'</div><div class="text-xs text-slate-500">'+inst.length+' งวด · '+fmt(paidAmt)+' ชำระแล้ว</div></div>' +
       '<span class="'+badgeClass(ds)+'">'+ds+'</span>' +
       '<div onclick="event.stopPropagation()" class="flex items-center gap-1">'+doneBtn+delBtn+'</div></div>';
@@ -874,14 +888,14 @@ function renderCompletedProjects(el) {
     var srch = ((p.project_name||'')+' '+(p.client_name||'')).toLowerCase();
     var delBtn = '<button class="text-slate-500 hover:text-red-400 p-1" onclick="deleteProject(\'' + p.project_id + '\',event)"><i data-lucide="trash-2" class="w-3 h-3"></i></button>';
     var nav = 'navigate(\'project-detail\',\'' + p.project_id + '\')';
-    if (isGrid) return '<div class="bg-slate-900 border border-emerald-900/50 rounded-xl p-4 flex flex-col gap-3 card-hover cursor-pointer" data-s="'+srch+'" onclick="'+nav+'">' +
+    if (isGrid) return '<div class="bg-slate-900 border border-emerald-900/50 rounded-xl p-4 flex flex-col gap-3 card-hover cursor-pointer" data-s="'+esc(srch)+'" onclick="'+nav+'">' +
       '<div class="flex items-start justify-between"><div class="w-10 h-10 rounded-lg bg-emerald-900/50 text-emerald-400 flex items-center justify-center"><i data-lucide="folder-check" class="w-5 h-5"></i></div><span class="'+badgeClass('done')+'">done</span></div>' +
-      '<div class="flex-1 min-w-0"><div class="text-sm font-semibold text-white leading-tight mb-0.5">'+(p.project_name||'Untitled')+'</div><div class="text-xs text-slate-500">'+(p.client_name||'-')+'</div></div>' +
+      '<div class="flex-1 min-w-0"><div class="text-sm font-semibold text-white leading-tight mb-0.5">'+esc(p.project_name||'Untitled')+'</div><div class="text-xs text-slate-500">'+esc(p.client_name||'-')+'</div></div>' +
       '<div class="border-t border-slate-800 pt-2 flex items-end justify-between"><div><div class="mono text-sm font-bold text-white">'+fmt(total)+'</div><div class="text-xs text-slate-500">'+inst.length+' งวด · '+fmt(paidAmt)+' จ่ายแล้ว</div></div>' +
       '<div onclick="event.stopPropagation()">'+delBtn+'</div></div></div>';
-    return '<div class="p-4 bg-slate-900 border border-emerald-900/50 rounded-xl card-hover cursor-pointer flex items-center gap-4" data-s="'+srch+'" onclick="'+nav+'">' +
+    return '<div class="p-4 bg-slate-900 border border-emerald-900/50 rounded-xl card-hover cursor-pointer flex items-center gap-4" data-s="'+esc(srch)+'" onclick="'+nav+'">' +
       '<div class="w-10 h-10 rounded-lg bg-emerald-900/50 text-emerald-400 flex items-center justify-center"><i data-lucide="folder-check" class="w-5 h-5"></i></div>' +
-      '<div class="flex-1 min-w-0"><div class="text-sm font-medium text-white">'+(p.project_name||'Untitled')+'</div><div class="text-xs text-slate-500">'+(p.client_name||'-')+' · '+fmtDate(p.created_at)+'</div></div>' +
+      '<div class="flex-1 min-w-0"><div class="text-sm font-medium text-white">'+esc(p.project_name||'Untitled')+'</div><div class="text-xs text-slate-500">'+esc(p.client_name||'-')+' · '+fmtDate(p.created_at)+'</div></div>' +
       '<div class="text-right mr-2"><div class="mono text-sm text-white">'+fmt(total)+'</div><div class="text-xs text-slate-500">'+inst.length+' งวด · '+fmt(paidAmt)+' ชำระแล้ว</div></div>' +
       '<span class="'+badgeClass('done')+'">done</span>' +
       '<div onclick="event.stopPropagation()">'+delBtn+'</div></div>';
@@ -914,9 +928,9 @@ function showProjectForm() {
     '<div class="text-sm font-semibold text-white mb-3">สร้างโปรเจกต์ใหม่</div>' +
     '<form onsubmit="saveProject(event)" class="grid grid-cols-2 gap-3">' +
     '<div class="col-span-2"><label class="text-xs text-slate-400">ชื่อโปรเจกต์</label><input id="proj-name" required class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white" placeholder="ชื่อโปรเจกต์"></div>' +
-    '<div><label class="text-xs text-slate-400">ลูกค้า</label><select id="proj-client" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="">-- เลือกลูกค้า --</option>' + clients.map(function(c) { return '<option value="' + c.name + '">' + c.name + '</option>'; }).join('') + '</select></div>' +
+    '<div><label class="text-xs text-slate-400">ลูกค้า</label><select id="proj-client" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white"><option value="">-- เลือกลูกค้า --</option>' + clients.map(function(c) { return '<option value="' + esc(c.name) + '">' + esc(c.name) + '</option>'; }).join('') + '</select></div>' +
     '<div><label class="text-xs text-slate-400">Fixed Cost</label><input id="proj-cost" type="number" step="0.01" value="0" class="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white mono"></div>' +
-    '<div class="col-span-2 flex gap-2 justify-end"><button type="button" class="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm" onclick="document.getElementById(\'project-form-area\').innerHTML=\'\'">ยกเลิก</button><button type="submit" class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm" id="proj-submit">สร้าง</button></div>' +
+    '<div class="col-span-2 flex gap-2 justify-end"><button type="button" class="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm" onclick="dsrCancelForm(\'project-form-area\')">ยกเลิก</button><button type="submit" class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm" id="proj-submit">สร้าง</button></div>' +
     '</form></div>';
   if (window.lucide) lucide.createIcons();
   setTimeout(function () { dsrRestoreFormDrafts(); }, 0);
@@ -1437,9 +1451,9 @@ async function processBOQFile(file) {
     else throw new Error('รองรับเฉพาะ PDF, Excel, CSV, JPG, PNG');
     if (!rows.length) throw new Error('ไม่พบรายการ BOQ ในไฟล์นี้');
     _boqAI.items = rows.map(function(r,i){
-      var qty = Number(r.qty || r.quantity || 1) || 1;
+      var qty = Number(r.qty ?? r.quantity ?? 1);
       var unitPrice = Number(r.unitPrice || r.unit_price || r.rate || 0) || 0;
-      var total = Number(r.total || r.amount || r.supplierTotal || (qty * unitPrice)) || 0;
+      var total = Number(r.total ?? r.amount ?? r.supplierTotal ?? (qty * unitPrice)) || 0;
       if (!unitPrice && qty) unitPrice = roundHU(total / qty);
       return { id:i+1, item:String(r.item || r.description || ('Item ' + (i+1))).trim(), qty:qty, unit:String(r.unit || 'lot'), supplierUnit:unitPrice, supplierTotal:roundHU(total), category:guessBOQCategory(r.category || r.item || r.description), add:0, final:roundHU(total) };
     });
@@ -1464,15 +1478,15 @@ function parseBOQSpreadsheet(file, ext) {
         var find = function(patterns){ return keys.find(function(k){ return patterns.some(function(p){ return String(k).toLowerCase().indexOf(p) >= 0; }); }) || ''; };
         var itemKey = find(['item','description','desc','work','name','particulars','รายการ','รายละเอียด']) || keys[0];
         var qtyKey = find(['qty','quantity','quant','จำนวน']);
-        var unitKey = find(['unit','uom','measure','หน่วย']);
+        var unitKey = keys.find(function(k) { return /^(unit|uom|measure|หน่วย)$/.test(String(k).trim().toLowerCase()); }) || '';
         var priceKey = find(['unit price','rate','price','unit_price','unitprice','ราคา/หน่วย','ราคาต่อหน่วย']);
         var totalKey = find(['total','amount','sum','subtotal','รวม','จำนวนเงิน']);
         var catKey = find(['category','cat','section','type','group','หมวด']);
         var rows = raw.filter(function(r){ return String(r[itemKey] || '').trim(); }).map(function(r){
-          var qty = boqParseMoney(qtyKey ? r[qtyKey] : 1) || 1;
+          var qty = qtyKey ? boqParseMoney(r[qtyKey]) : 1;
           var unitPrice = boqParseMoney(priceKey ? r[priceKey] : 0);
           var total = boqParseMoney(totalKey ? r[totalKey] : 0);
-          if (!total) total = qty * unitPrice;
+          if (!totalKey || r[totalKey] === '') total = qty * unitPrice;
           if (!unitPrice && qty) unitPrice = total / qty;
           return { item:String(r[itemKey] || '').trim(), qty:qty, unit:String(unitKey ? (r[unitKey] || 'lot') : 'lot'), unitPrice:roundHU(unitPrice), total:roundHU(total), category:catKey ? String(r[catKey] || '') : '' };
         });
@@ -1788,7 +1802,7 @@ function renderProjectDetail(el, projId) {
 
   el.innerHTML = '<div class="p-6 fade-in">' +
     '<button class="text-sm text-slate-400 hover:text-white mb-4 flex items-center gap-1" onclick="navigate(\'projects\')"><i data-lucide="arrow-left" class="w-4 h-4"></i> กลับ</button>' +
-    '<div class="flex justify-between items-start mb-6"><div><div class="flex items-center gap-2"><h1 class="text-2xl font-bold text-white">' + (project.project_name||'Untitled') + '</h1><button type="button" class="p-1 text-slate-500 hover:text-orange-400 rounded" title="แก้ไขชื่อโปรเจกต์" aria-label="แก้ไขชื่อโปรเจกต์" onclick="editProjectName(\'' + projId + '\')"><i data-lucide="pencil" class="w-4 h-4"></i></button></div><p class="text-slate-400 text-sm">ลูกค้า: ' + (project.client_name||'-') + ' · Fixed Cost: ' + fmt(project.fixed_cost||0) + ' บาท</p></div>' +
+    '<div class="flex justify-between items-start mb-6"><div><div class="flex items-center gap-2"><h1 class="text-2xl font-bold text-white">' + esc(project.project_name||'Untitled') + '</h1><button type="button" class="p-1 text-slate-500 hover:text-orange-400 rounded" title="แก้ไขชื่อโปรเจกต์" aria-label="แก้ไขชื่อโปรเจกต์" onclick="editProjectName(\'' + projId + '\')"><i data-lucide="pencil" class="w-4 h-4"></i></button></div><p class="text-slate-400 text-sm">ลูกค้า: ' + esc(project.client_name||'-') + ' · Fixed Cost: ' + fmt(project.fixed_cost||0) + ' บาท</p></div>' +
     '<div class="flex items-center gap-2 flex-wrap justify-end">' + (showDoneBtn ? '<button class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm flex items-center gap-2" onclick="markProjectDone(\'' + projId + '\',event)"><i data-lucide="check-circle" class="w-4 h-4"></i> เสร็จสิ้น</button>' : '') + '<span class="' + badgeClass(displayStatus) + '">' + displayStatus + '</span></div></div>' +
     '<div class="flex gap-1 border-b border-slate-800 mb-4">' +
     '<button class="tab-btn active" onclick="showTab(\'qt\',this)">ใบเสนอราคา</button>' +
@@ -2115,8 +2129,9 @@ async function updateQuotationMeta(qId, field, value) {
 }
 
 async function createQuotation(projId) {
-  var docNum = nextDocNum('QT');
-  var result = await window.dataSdk.create({
+  var quotationId = 'local-' + crypto.randomUUID();
+  var docNum = await dsrReserveDocNumber('QT', 'doc_number', quotationId);
+  var result = await window.dataSdk.create({ __backendId: quotationId,
     record_type:'quotation', project_id:projId, doc_number:docNum,
     items_json:'[]', subtotal:0, vat_amount:0, client_wht_amount:0, grand_total:0,
     vat_mode:'excluded', created_at:new Date().toISOString(),
@@ -2209,7 +2224,7 @@ async function cascadePartnerSplits(projId, usePrimaryWriter) {
     let partnerAmt = sp.partner_share_type === 'percent'
       ? roundHU(profitBase * (sp.partner_share_value||0) / 100)
       : roundHU(sp.partner_share_value || 0);
-    const whtRate = sp.partner_wht_rate || 3;
+    const whtRate = sp.partner_wht_rate ?? 3;
     const { vatEnabled, vatRate } = resolvePartnerVat(sp);
     const vatAmt = vatEnabled ? roundHU(partnerAmt * vatRate / 100) : 0;
     const whtAmt = roundHU(partnerAmt * whtRate / 100);
@@ -2231,7 +2246,7 @@ function showInstallmentForm(projId) {
     '<div><label class="text-xs text-slate-400">ค่า</label><input id="inst-val" type="number" step="0.01" required class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white mono"></div>' +
     '<div><label class="text-xs text-slate-400">กำหนดชำระ</label><input id="inst-due" type="date" class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white"></div>' +
     '<div class="col-span-4"><label class="text-xs text-slate-400">Condition / เงื่อนไขงวด</label><input id="inst-condition" type="text" placeholder="เช่น ชำระเมื่ออนุมัติแบบ Concept Design" class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white"></div>' +
-    '<div class="col-span-4 flex justify-end gap-2"><button type="submit" class="px-3 py-1.5 bg-orange-600 text-white rounded text-xs" id="inst-submit">เพิ่ม</button><button type="button" class="px-3 py-1.5 bg-slate-700 text-white rounded text-xs" onclick="document.getElementById(\'inst-form-area\').innerHTML=\'\'">ยกเลิก</button></div>' +
+    '<div class="col-span-4 flex justify-end gap-2"><button type="submit" class="px-3 py-1.5 bg-orange-600 text-white rounded text-xs" id="inst-submit">เพิ่ม</button><button type="button" class="px-3 py-1.5 bg-slate-700 text-white rounded text-xs" onclick="dsrCancelForm(\'inst-form-area\')">ยกเลิก</button></div>' +
     '</form></div>';
   setTimeout(function () { dsrRestoreFormDrafts(); }, 0);
 }
@@ -2338,8 +2353,8 @@ async function updateInstallmentCondition(id, value) {
 async function issueInvoice(id) {
   const inst = allData.find(r => r.__backendId === dsrResolveRecordId(id));
   if (!inst) return;
-  const invNum = nextDocNum('INV');
-  showDateConfirm('ออก Invoice ' + invNum + '\n' + fmt(inst.amount||0) + ' บาท\n\nเลือกวันที่ Invoice (ย้อนหลัง/ล่วงหน้าได้)', 'ออก Invoice', 'bg-amber-600 hover:bg-amber-500', async function(dateISO) {
+  showDateConfirm('ออก Invoice' + '\n' + fmt(inst.amount||0) + ' บาท\n\nเลือกวันที่ Invoice (ย้อนหลัง/ล่วงหน้าได้)', 'ออก Invoice', 'bg-amber-600 hover:bg-amber-500', async function(dateISO) {
+    const invNum = await dsrReserveDocNumber('INV', 'invoice_number', inst.__backendId);
     await window.dataSdk.update(Object.assign({}, inst, { invoice_number: invNum, invoice_date: dateISO, status: 'invoiced' }));
     showToast('ออก Invoice ' + invNum);
     await addLog(inst.project_id, 'ออก Invoice', invNum);
@@ -2349,8 +2364,8 @@ async function issueInvoice(id) {
 async function issueReceipt(id) {
   const inst = allData.find(r => r.__backendId === dsrResolveRecordId(id));
   if (!inst) return;
-  const recNum = nextDocNum('REC');
-  showDateConfirm('ออกใบเสร็จ ' + recNum + '\n' + fmt(inst.amount||0) + ' บาท\n\nเลือกวันที่ใบเสร็จ (ย้อนหลัง/ล่วงหน้าได้)', 'ออกใบเสร็จ', 'bg-emerald-600 hover:bg-emerald-500', async function(dateISO) {
+  showDateConfirm('ออกใบเสร็จ' + '\n' + fmt(inst.amount||0) + ' บาท\n\nเลือกวันที่ใบเสร็จ (ย้อนหลัง/ล่วงหน้าได้)', 'ออกใบเสร็จ', 'bg-emerald-600 hover:bg-emerald-500', async function(dateISO) {
+    const recNum = await dsrReserveDocNumber('REC', 'receipt_number', inst.__backendId);
     await window.dataSdk.update(Object.assign({}, inst, { receipt_number: recNum, receipt_date: dateISO }));
     showToast('ออกใบเสร็จ ' + recNum);
     await addLog(inst.project_id, 'ออกใบเสร็จ', recNum);
@@ -2420,7 +2435,7 @@ function renderPieAllocPanel(projId, profitBase, splits) {
     '<div class="flex rounded-lg overflow-hidden h-5 mb-4 bg-slate-800">' +
     splits.map(function(sp,i) {
       const pct = roundPct(sp.partner_share_value || 0);
-      return pct > 0 ? '<div style="width:' + pct + '%;background:' + PIE_COLORS[i%PIE_COLORS.length] + '" title="' + sp.partner_name + ': ' + pct + '%" class="flex items-center justify-center text-white">' + (pct >= 8 ? '<span class="text-xs font-bold">' + pct + '%</span>' : '') + '</div>' : '';
+      return pct > 0 ? '<div style="width:' + pct + '%;background:' + PIE_COLORS[i%PIE_COLORS.length] + '" title="' + esc(sp.partner_name) + ': ' + pct + '%" class="flex items-center justify-center text-white">' + (pct >= 8 ? '<span class="text-xs font-bold">' + pct + '%</span>' : '') + '</div>' : '';
     }).join('') +
     (remaining > 0 ? '<div style="width:' + remaining + '%" class="bg-slate-700 flex items-center justify-center">' + (remaining >= 8 ? '<span class="text-xs text-slate-500">' + remaining + '%</span>' : '') + '</div>' : '') +
     '</div>' +
@@ -2430,7 +2445,7 @@ function renderPieAllocPanel(projId, profitBase, splits) {
     '</div>' +
     (available.length > 0 ?
       '<div class="flex items-center gap-2 pt-3 border-t border-slate-800">' +
-      '<select id="new-partner-sel-' + projId + '" class="flex-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white"><option value="">+ เลือกพาร์ทเนอร์</option>' + available.map(function(p) { return '<option value="' + p.name + '" data-wht="' + (p.default_wht||3) + '">' + p.name + '</option>'; }).join('') + '</select>' +
+      '<select id="new-partner-sel-' + projId + '" class="flex-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white"><option value="">+ เลือกพาร์ทเนอร์</option>' + available.map(function(p) { return '<option value="' + esc(p.name) + '" data-wht="' + (p.default_wht ?? 3) + '">' + esc(p.name) + '</option>'; }).join('') + '</select>' +
       '<button class="px-3 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs flex items-center gap-1 flex-shrink-0" onclick="addPartnerToPie(\'' + projId + '\',' + profitBase + ')"><i data-lucide="user-plus" class="w-3 h-3"></i> เพิ่ม</button>' +
       '</div>' : '') +
     (Math.abs(totalPct-100) < 0.01 && splits.length > 0 ? '<div class="mt-3 pt-3 border-t border-slate-800 flex items-center gap-2 text-xs text-emerald-400"><i data-lucide="check-circle" class="w-3 h-3"></i> ครบ 100%</div>' : '') +
@@ -2440,7 +2455,7 @@ function renderPieAllocPanel(projId, profitBase, splits) {
 function renderAllocRow(sp, idx, profitBase, projId) {
   const pct = sp.partner_share_value || 0;
   const amount = roundHU(profitBase * pct / 100); // gross partner share before VAT/WHT
-  const whtRate = sp.partner_wht_rate || 3;
+  const whtRate = sp.partner_wht_rate ?? 3;
   const { vatEnabled, vatRate } = resolvePartnerVat(sp);
   const vatAmt = vatEnabled ? roundHU(amount * vatRate / 100) : 0;
   const whtAmt = roundHU(amount * whtRate / 100);
@@ -2453,7 +2468,7 @@ function renderAllocRow(sp, idx, profitBase, projId) {
   return `<div class="p-2.5 rounded-lg ${isLocked ? 'bg-slate-800/60 border-slate-700/50' : 'bg-orange-950/20 border-orange-500/40'} border overflow-hidden">
     <div class="flex items-center gap-3">
       <div class="w-3 h-3 rounded-full flex-shrink-0" style="background:${color}"></div>
-      <div class="min-w-0 flex-1 md:w-24 md:flex-none"><div class="text-xs font-medium text-white truncate">${sp.partner_name}</div><div class="flex items-center gap-1 flex-wrap"><span class="text-xs text-slate-500">WHT ${whtRate}%</span>${vatBadge}</div></div>
+      <div class="min-w-0 flex-1 md:w-24 md:flex-none"><div class="text-xs font-medium text-white truncate">${esc(sp.partner_name)}</div><div class="flex items-center gap-1 flex-wrap"><span class="text-xs text-slate-500">WHT ${whtRate}%</span>${vatBadge}</div></div>
       <div class="hidden md:block flex-1 min-w-[140px]">${sliderHtml}</div>
       <div class="flex items-center gap-2 flex-shrink-0">
         <button type="button" class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${isLocked ? 'bg-amber-600/30 text-amber-400' : 'bg-orange-600/30 text-orange-300 hover:text-white'}" title="${isLocked ? 'ปลดล็อกเพื่อแก้ไข' : 'ยกเลิกการแก้ไขและล็อก'}" onclick="toggleAllocLock('${sp.__backendId}','${projId}',${profitBase},this)"><i data-lucide="${isLocked ? 'lock' : 'lock-open'}" class="w-3 h-3"></i></button>
@@ -2484,7 +2499,7 @@ async function equalizeUnlocked(projId, profitBase) {
       ? roundPct(available - equalPct * (unlocked.length - 1))
       : equalPct;
     const partnerAmt = roundHU(profitBase * pct / 100);
-    const whtRate = sp.partner_wht_rate || 3;
+    const whtRate = sp.partner_wht_rate ?? 3;
     const { vatEnabled, vatRate } = resolvePartnerVat(sp);
     const vatAmt = vatEnabled ? roundHU(partnerAmt * vatRate / 100) : 0;
     const whtAmt = roundHU(partnerAmt * whtRate / 100);
@@ -2513,7 +2528,7 @@ async function addPartnerToPie(projId, profitBase) {
   const sel = document.getElementById('new-partner-sel-' + projId);
   if (!sel || !sel.value) { showToast('เลือกพาร์ทเนอร์ก่อน', 'error'); return; }
   const partnerName = sel.value;
-  const whtRate = parseFloat(sel.options[sel.selectedIndex].dataset.wht) || 3;
+  const whtRate = Number(sel.options[sel.selectedIndex].dataset.wht ?? 3);
   const partnerProfile = getProfiles('partner').find(function(p) { return p.name === partnerName; });
   const vatEnabled = partnerProfile ? !!partnerProfile.vat_enabled : false;
   const vatRate = partnerProfile ? (parseFloat(partnerProfile.vat_rate) || 7) : 7;
@@ -2648,7 +2663,7 @@ async function _applyAllocChange(splitId, projId, profitBase, newPct, lockCurren
 
 function _buildSplitUpdate(sp, pct, profitBase) {
   const partnerAmt = roundHU(profitBase * pct / 100);
-  const whtRate = sp.partner_wht_rate || 3;
+  const whtRate = sp.partner_wht_rate ?? 3;
   const { vatEnabled, vatRate } = resolvePartnerVat(sp);
   const vatAmt = vatEnabled ? roundHU(partnerAmt * vatRate / 100) : 0;
   const whtAmt = roundHU(partnerAmt * whtRate / 100);
@@ -2743,7 +2758,7 @@ function renderSplitCard(sp, q, project, installments, projId) {
         '<span class="text-xs text-slate-500 w-12 flex-shrink-0">งวด ' + (i+1) + '</span>' +
         '<span class="mono text-xs text-white w-28 flex-shrink-0">ก่อนหัก ' + fmt(inst.amount) + '</span>' +
         (function(){
-          const iWhtRate = inst.wht_rate || sp.partner_wht_rate || 3;
+          const iWhtRate = inst.wht_rate ?? sp.partner_wht_rate ?? 3;
           const iVatEnabled = inst.vat_enabled !== undefined ? !!inst.vat_enabled : vatEnabled;
           const iVatRate = inst.vat_rate || vatRate;
           const iVatAmt = iVatEnabled ? roundHU((inst.amount||0) * iVatRate / 100) : 0;
@@ -2781,10 +2796,10 @@ function renderSplitCard(sp, q, project, installments, projId) {
 
   return '<div class="bg-slate-800/50 rounded-xl p-4 slide-in">' +
     '<div class="flex items-start gap-3 mb-2">' +
-    '<div class="w-9 h-9 rounded-full bg-purple-900/60 text-purple-400 flex items-center justify-center text-sm font-bold flex-shrink-0">' + (sp.partner_name||'?')[0] + '</div>' +
+    '<div class="w-9 h-9 rounded-full bg-purple-900/60 text-purple-400 flex items-center justify-center text-sm font-bold flex-shrink-0">' + esc((sp.partner_name||'?')[0]) + '</div>' +
     '<div class="flex-1 min-w-0">' +
-    '<div class="text-sm font-semibold text-white">' + sp.partner_name + '</div>' +
-    '<div class="text-xs text-slate-500">' + (sp.partner_share_type === 'percent' ? sp.partner_share_value + '% ของกำไร' : 'คงที่') + ' · WHT ' + (sp.partner_wht_rate||3) + '% (' + fmt(sp.partner_wht_amount||0) + ')' + (vatEnabled ? ' · <span class="text-sky-400">VAT ' + vatRate + '% (+' + fmt(vatAmt) + ')</span>' : '') + (totalExp > 0 ? ' · หักค่าใช้จ่าย ' + fmt(totalExp) : '') + '</div>' +
+    '<div class="text-sm font-semibold text-white">' + esc(sp.partner_name) + '</div>' +
+    '<div class="text-xs text-slate-500">' + (sp.partner_share_type === 'percent' ? sp.partner_share_value + '% ของกำไร' : 'คงที่') + ' · WHT ' + (sp.partner_wht_rate ?? 3) + '% (' + fmt(sp.partner_wht_amount||0) + ')' + (vatEnabled ? ' · <span class="text-sky-400">VAT ' + vatRate + '% (+' + fmt(vatAmt) + ')</span>' : '') + (totalExp > 0 ? ' · หักค่าใช้จ่าย ' + fmt(totalExp) : '') + '</div>' +
     '</div>' +
     '<div class="text-right flex-shrink-0"><div class="text-sm font-bold mono text-white">' + fmt(netTotal) + '</div><div class="text-xs text-slate-500">ยอดสุทธิ</div></div>' +
     '<button class="text-slate-500 hover:text-red-400 p-1 flex-shrink-0" title="' + (sp.partner_paid ? 'ลบข้อมูลพาร์ทเนอร์ที่จ่ายแล้ว' : 'ลบพาร์ทเนอร์') + '" onclick="deleteSplitRecord(\'' + sp.__backendId + '\')"><i data-lucide="trash-2" class="w-3 h-3"></i></button>' +
@@ -2815,7 +2830,7 @@ function showPartnerInstForm(splitId) {
   const expenses = byType('project_expense').filter(e => e.partner_split_id === splitId && e.deduct_from_partner);
   const totalExp = expenses.reduce((s,e) => s + (e.expense_amount||0), 0);
   const grossTotal = roundHU((sp.partner_amount||0) - totalExp);
-  const whtRate = sp.partner_wht_rate || 3;
+  const whtRate = sp.partner_wht_rate ?? 3;
   const { vatEnabled: spVatEnabled, vatRate: spVatRate } = resolvePartnerVat(sp);
   const existInsts = getPartnerInsts(splitId);
   const nextInstIndex = existInsts.length ? Math.max.apply(null, existInsts.map(function(i) { return i.inst_index || 0; })) + 1 : 0;
@@ -2860,7 +2875,7 @@ function updatePartnerInstCalc(splitId, grossTotal, whtRate, vatEnabled, vatRate
     if (document.activeElement !== pctEl) pctEl.value = pct ? Number(pct).toFixed(4).replace(/0+$/,'').replace(/\.$/,'') : '';
   }
   const vatAmt = vatEnabled ? roundHU(amount * ((vatRate || 7) / 100)) : 0;
-  const whtAmt = roundHU(amount * ((whtRate || 3) / 100));
+  const whtAmt = roundHU(amount * ((whtRate ?? 3) / 100));
   const netAmt = roundHU(amount + vatAmt - whtAmt);
   const pctDisplay = pct ? Number(pct).toFixed(2).replace(/\.?0+$/, '') || '0' : '0';
   const vatPart = vatEnabled ? ' · VAT <span class="mono text-sky-400">+' + fmt(vatAmt) + '</span>' : '';
@@ -2877,7 +2892,7 @@ async function savePartnerInst(splitId) {
   const expenses = byType('project_expense').filter(e => e.partner_split_id === splitId && e.deduct_from_partner);
   const totalExp = expenses.reduce((s,e) => s + (e.expense_amount||0), 0);
   const grossTotal = roundHU((sp.partner_amount||0) - totalExp);
-  const whtRate = sp.partner_wht_rate || 3;
+  const whtRate = sp.partner_wht_rate ?? 3;
   const { vatEnabled: instVatEnabled, vatRate: instVatRate } = resolvePartnerVat(sp);
   const mode = modeEl ? modeEl.value : 'amount';
   let percentValue = parseFloat(pctEl ? pctEl.value : '') || 0;
@@ -2920,7 +2935,7 @@ async function payPartnerInst(instId) {
   const inst = allData.find(r => r.__backendId === dsrResolveRecordId(instId));
   if (!inst) return;
   const sp = allData.find(r => r.__backendId === inst.split_id);
-  const instWhtRate = inst.wht_rate || (sp ? (sp.partner_wht_rate || 3) : 3);
+  const instWhtRate = inst.wht_rate ?? (sp ? (sp.partner_wht_rate ?? 3) : 3);
   const spVat = sp ? resolvePartnerVat(sp) : { vatEnabled: false, vatRate: 7 };
   const instVatEnabled = inst.vat_enabled !== undefined ? !!inst.vat_enabled : spVat.vatEnabled;
   const instVatRate = inst.vat_rate || spVat.vatRate;
@@ -2965,7 +2980,7 @@ async function disbursePartner(id) {
   const expenses = byType('project_expense').filter(function(e) { return e.partner_split_id === id && e.deduct_from_partner; });
   const totalExp = expenses.reduce(function(s,e) { return s + (e.expense_amount||0); }, 0);
   const net = roundHU((sp.partner_net_amount||0) - totalExp);
-  showDateConfirm('จ่ายเงินให้ ' + sp.partner_name + '\nสุทธิ: ' + fmt(net) + ' บาท\n(WHT ' + (sp.partner_wht_rate||3) + '%: ' + fmt(sp.partner_wht_amount||0) + ' บาท)\n\nเลือกวันที่จ่าย (ย้อนหลัง/ล่วงหน้าได้)', 'ยืนยันจ่าย', 'bg-purple-600 hover:bg-purple-500', async function(dateISO) {
+  showDateConfirm('จ่ายเงินให้ ' + sp.partner_name + '\nสุทธิ: ' + fmt(net) + ' บาท\n(WHT ' + (sp.partner_wht_rate ?? 3) + '%: ' + fmt(sp.partner_wht_amount||0) + ' บาท)\n\nเลือกวันที่จ่าย (ย้อนหลัง/ล่วงหน้าได้)', 'ยืนยันจ่าย', 'bg-purple-600 hover:bg-purple-500', async function(dateISO) {
     await window.dataSdk.update(Object.assign({}, sp, { partner_paid: true, partner_paid_date: dateISO }));
     showToast('บันทึกจ่ายเงินสำเร็จ — ออก Partner Receipt อัตโนมัติแล้ว');
     await addLog(sp.project_id, 'จ่ายเงินพาร์ทเนอร์', sp.partner_name + ' จำนวน ' + fmt(net) + ' บาท');
@@ -3059,11 +3074,11 @@ function renderPartners(el) {
     if (isGrid) return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col gap-2 card-hover cursor-pointer" onclick="'+nav+'">' +
       '<div class="flex items-start justify-between"><div class="w-9 h-9 rounded-full bg-purple-900/50 text-purple-400 flex items-center justify-center font-bold text-sm">'+esc((sp.partner_name||'?')[0])+'</div>'+(hasPaid?'<span class="badge badge-paid">จ่ายแล้ว</span>':'<span class="badge badge-draft">รอจ่าย</span>')+'</div>' +
       '<div class="text-sm font-semibold text-white truncate">'+esc(sp.partner_name)+'</div>' +
-      '<div class="text-xs text-slate-500 truncate">'+(proj?proj.project_name:'-')+'</div>' +
-      '<div class="border-t border-slate-800 pt-2 flex justify-between"><div class="mono text-sm font-bold text-white">'+fmt(sp.partner_net_amount||0)+'</div><div class="text-xs text-slate-500">WHT '+(sp.partner_wht_rate||3)+'%</div></div></div>';
+      '<div class="text-xs text-slate-500 truncate">'+esc(proj?proj.project_name:'-')+'</div>' +
+      '<div class="border-t border-slate-800 pt-2 flex justify-between"><div class="mono text-sm font-bold text-white">'+fmt(sp.partner_net_amount||0)+'</div><div class="text-xs text-slate-500">WHT '+(sp.partner_wht_rate ?? 3)+'%</div></div></div>';
     return '<div class="p-3 bg-slate-900 border border-slate-800 rounded-xl flex items-center gap-3 card-hover cursor-pointer" onclick="'+nav+'">' +
       '<div class="w-8 h-8 rounded-full bg-purple-900/50 text-purple-400 flex items-center justify-center text-xs font-bold">'+esc((sp.partner_name||'?')[0])+'</div>' +
-      '<div class="flex-1 min-w-0"><div class="text-sm text-white truncate">'+esc(sp.partner_name)+' · '+esc(proj?proj.project_name:'-')+'</div><div class="text-xs text-slate-500">WHT '+(sp.partner_wht_rate||3)+'%</div></div>' +
+      '<div class="flex-1 min-w-0"><div class="text-sm text-white truncate">'+esc(sp.partner_name)+' · '+esc(proj?proj.project_name:'-')+'</div><div class="text-xs text-slate-500">WHT '+(sp.partner_wht_rate ?? 3)+'%</div></div>' +
       '<div class="mono text-sm text-white">'+fmt(sp.partner_net_amount||0)+'</div>' +
       (hasPaid?'<span class="badge badge-paid">จ่ายแล้ว</span>':'<span class="badge badge-draft">รอจ่าย</span>')+'</div>';
   }).join('');
@@ -3349,7 +3364,7 @@ function renderDocuments(el) {
 function showUploadExtDoc(projId) {
   const area = document.getElementById('ext-upload-' + projId);
   if (!area) return;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = dsrLocalDate();
   area.innerHTML = '<div class="bg-slate-800 border border-slate-700 border-dashed rounded-xl p-4 mb-3 fade-in">' +
     '<div class="text-xs font-semibold text-slate-300 mb-3 flex items-center gap-2"><i data-lucide="upload" class="w-3 h-3 text-purple-400"></i> อัปโหลดเอกสารภายนอก</div>' +
     '<div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">' +
@@ -3435,14 +3450,17 @@ function viewExtDoc(extId) {
   d.style.display = 'flex';
   const isPdf = rec.ext_doc_file_type === 'application/pdf';
   const name  = esc(rec.ext_doc_name || 'เอกสาร');
+  const isImage = /^image\//.test(rec.ext_doc_file_type || '');
   const content = isPdf
     ? '<iframe src="'+rec.ext_doc_data+'" class="w-full rounded-lg" style="height:70vh;border:none;"></iframe>'
-    : '<img src="'+rec.ext_doc_data+'" class="max-w-full max-h-[70vh] rounded-lg object-contain mx-auto block">';
+    : isImage ? '<img src="'+rec.ext_doc_data+'" class="max-w-full max-h-[70vh] rounded-lg object-contain mx-auto block">'
+    : '<p class="text-sm text-slate-300 p-4">ไฟล์ประเภทนี้เปิดดูได้หลังดาวน์โหลด</p>';
+  const downloadName = esc(safeDocumentFileName(rec.ext_doc_file_name || rec.ext_doc_name || 'document'));
   d.innerHTML = '<div class="bg-slate-800 rounded-xl p-4 border border-slate-700 fade-in" style="max-width:min(92vw,720px);width:100%">' +
     '<div class="flex items-center justify-between mb-3">' +
       '<div class="text-sm font-semibold text-white flex items-center gap-2"><i data-lucide="'+(isPdf?'file-text':'image')+'" class="w-4 h-4 text-purple-400"></i>'+name+'</div>' +
       '<div class="flex gap-2">' +
-        '<a href="'+rec.ext_doc_data+'" download="'+name+'" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs flex items-center gap-1"><i data-lucide="download" class="w-3 h-3"></i>ดาวน์โหลด</a>' +
+        '<a href="'+rec.ext_doc_data+'" download="'+downloadName+'" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs flex items-center gap-1"><i data-lucide="download" class="w-3 h-3"></i>ดาวน์โหลด</a>' +
         '<button class="px-3 py-1.5 bg-slate-700 text-slate-300 hover:bg-slate-600 rounded-lg text-xs" onclick="document.getElementById(\'confirm-dialog\').style.display=\'none\'">ปิด</button>' +
       '</div>' +
     '</div>' + content + '</div>';
@@ -3482,7 +3500,9 @@ function documentDateFilePart(value) {
 function previewDoc(projId, type, docNum) {
   const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
   const project = allData.find(r => r.record_type === 'project' && r.project_id === projId);
-  const q = getQuotation(projId);
+  const q = type === 'QT' && docNum
+    ? byType('quotation').find(function(record) { return record.project_id === projId && record.doc_number === docNum; })
+    : getQuotation(projId);
   if (!project || !q) { console.warn('previewDoc missing project/quotation', {projId: projId, type: type, docNum: docNum, project: project, quotation: q}); showToast('ไม่พบข้อมูลเอกสารสำหรับพรีวิว', 'error'); return false; }
   if (!docNum) {
     if (type === 'QT') docNum = q.doc_number || '';
@@ -3502,7 +3522,7 @@ function previewDoc(projId, type, docNum) {
 
   let instAmount = q.grand_total, instIdx = '', docDate = q.created_at || new Date().toISOString(), dueDate = '', paidDate = '', currentInstId = '';
   if (type !== 'QT') {
-    const inst = byType('installment').find(i => i.invoice_number === docNum || i.receipt_number === docNum);
+    const inst = byType('installment').find(i => i.project_id === projId && (i.invoice_number === docNum || i.receipt_number === docNum));
     if (inst) {
       currentInstId = inst.__backendId;
       instAmount = inst.amount;
@@ -3823,8 +3843,8 @@ function showExpenseForm(projId) {
     '<div><label class="text-xs text-slate-400">หมวดหมู่</label><select id="exp-category" class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white"><option value="transport">ค่าขนส่ง</option><option value="materials">วัสดุ</option><option value="labor">ค่าแรง</option><option value="food">ค่าอาหาร</option><option value="other">อื่นๆ</option></select></div>' +
     '<div><label class="text-xs text-slate-400">รายละเอียด</label><input id="exp-desc" class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white" placeholder="เช่น น้ำมัน"></div>' +
     '<div><label class="text-xs text-slate-400">จำนวนเงิน</label><input id="exp-amt" type="number" step="0.01" required class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white mono"></div>' +
-    '<div class="col-span-2"><label class="text-xs text-slate-400">ประเภท</label><select id="exp-partner" class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white"><option value="">ทั่วไป (หักกำไรก่อนแบ่ง)</option>' + splits.map(function(s) { return '<option value="' + s.__backendId + '">หักจาก ' + s.partner_name + '</option>'; }).join('') + '</select></div>' +
-    '<div class="flex items-end gap-2"><button type="submit" class="px-3 py-1.5 bg-green-600 text-white rounded text-xs" id="exp-submit">เพิ่ม</button><button type="button" class="px-3 py-1.5 bg-slate-700 text-white rounded text-xs" onclick="document.getElementById(\'expense-form-area\').innerHTML=\'\'" >ยกเลิก</button></div>' +
+    '<div class="col-span-2"><label class="text-xs text-slate-400">ประเภท</label><select id="exp-partner" class="w-full mt-1 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white"><option value="">ทั่วไป (หักกำไรก่อนแบ่ง)</option>' + splits.map(function(s) { return '<option value="' + s.__backendId + '">หักจาก ' + esc(s.partner_name) + '</option>'; }).join('') + '</select></div>' +
+    '<div class="flex items-end gap-2"><button type="submit" class="px-3 py-1.5 bg-green-600 text-white rounded text-xs" id="exp-submit">เพิ่ม</button><button type="button" class="px-3 py-1.5 bg-slate-700 text-white rounded text-xs" onclick="dsrCancelForm(\'expense-form-area\')" >ยกเลิก</button></div>' +
     '<div class="col-span-6"><label class="text-xs text-slate-400 block mb-1">แนบเอกสาร <span class="text-slate-600">(ไม่บังคับ · รูปภาพหรือ PDF ขนาดไม่เกิน 4MB)</span></label>' +
     '<input id="exp-doc-file" type="file" accept="image/*,application/pdf" class="w-full text-xs text-slate-400 file:mr-2 file:px-2 file:py-1 file:rounded file:border-0 file:bg-slate-700 file:text-slate-200 file:text-xs" onchange="previewExpenseDoc(this)">' +
     '<div id="exp-doc-preview" class="mt-1"></div></div>' +
@@ -3893,8 +3913,8 @@ function renderExpenseCard(exp, projId) {
     : '';
   return '<div class="p-3 bg-slate-800/50 rounded-lg flex items-center gap-3 slide-in flex-wrap">' +
     '<div class="w-8 h-8 rounded-full ' + (exp.deduct_from_partner ? 'bg-purple-900/50 text-purple-400' : 'bg-green-900/50 text-green-400') + ' flex items-center justify-center flex-shrink-0"><i data-lucide="receipt" class="w-4 h-4"></i></div>' +
-    '<div class="flex-1 min-w-0"><div class="text-sm text-white font-medium">' + (exp.expense_description||'ค่าใช้จ่าย') + '</div>' +
-    '<div class="text-xs text-slate-500">' + (exp.expense_category||'ทั่วไป') + ' · ' + (exp.deduct_from_partner ? '<span class="text-purple-400">หักจาก ' + (allData.find(function(s) { return s.__backendId === exp.partner_split_id; }) || {partner_name:'-'}).partner_name + '</span>' : '<span class="text-amber-400">ทั่วไป</span>') + '</div></div>' +
+    '<div class="flex-1 min-w-0"><div class="text-sm text-white font-medium">' + esc(exp.expense_description||'ค่าใช้จ่าย') + '</div>' +
+    '<div class="text-xs text-slate-500">' + esc(exp.expense_category||'ทั่วไป') + ' · ' + (exp.deduct_from_partner ? '<span class="text-purple-400">หักจาก ' + (allData.find(function(s) { return s.__backendId === exp.partner_split_id; }) || {partner_name:'-'}).partner_name + '</span>' : '<span class="text-amber-400">ทั่วไป</span>') + '</div></div>' +
     '<div class="mono text-sm text-white font-medium flex-shrink-0">' + fmt(exp.expense_amount||0) + '</div>' +
     docBtn +
     '<button class="text-slate-500 hover:text-red-400 p-1 flex-shrink-0" onclick="deleteExpense(\'' + exp.__backendId + '\',\'' + projId + '\')"><i data-lucide="trash-2" class="w-3 h-3"></i></button></div>';
@@ -3940,7 +3960,7 @@ function renderLogs(el) {
     (logs.length === 0 ? '<p class="text-slate-500 text-sm text-center py-8">ยังไม่มีประวัติ</p>' :
       logs.slice(0,50).map(function(l) {
         const proj = allData.find(r => r.record_type === 'project' && r.project_id === l.project_id);
-        return '<div class="flex items-center gap-3 p-2 rounded hover:bg-slate-900/50"><div class="w-2 h-2 rounded-full bg-orange-500 flex-shrink-0"></div><div class="text-xs text-slate-500 mono w-36 shrink-0">' + fmtDate(l.log_timestamp) + '</div><div class="text-sm text-white">' + l.log_action + '</div><div class="text-xs text-slate-400 flex-1 truncate">' + (l.log_detail||'') + (proj ? ' · ' + proj.project_name : '') + '</div></div>';
+        return '<div class="flex items-center gap-3 p-2 rounded hover:bg-slate-900/50"><div class="w-2 h-2 rounded-full bg-orange-500 flex-shrink-0"></div><div class="text-xs text-slate-500 mono w-36 shrink-0">' + fmtDate(l.log_timestamp) + '</div><div class="text-sm text-white">' + esc(l.log_action) + '</div><div class="text-xs text-slate-400 flex-1 truncate">' + esc(l.log_detail||'') + (proj ? ' · ' + esc(proj.project_name) : '') + '</div></div>';
       }).join('')) + '</div></div>';
 }
 
@@ -3968,14 +3988,14 @@ function renderSettings(el) {
   el.innerHTML = '<div class="p-6 fade-in"><h1 class="text-2xl font-bold text-white mb-1">ตั้งค่าระบบ</h1><p class="text-slate-400 text-sm mb-6">จัดการข้อมูลบริษัทและรูปเอกสาร</p>' +
     '<div class="max-w-3xl"><form id="settings-form" onsubmit="saveSettings(event)" class="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">' +
     '<h2 class="text-lg font-semibold text-white">ข้อมูลบริษัท</h2>' +
-    '<div><label class="text-sm text-slate-400 block mb-2">ชื่อบริษัท</label><input id="set-company-name" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + (cfg.company_name||defaultConfig.company_name) + '"></div>' +
-    '<div><label class="text-sm text-slate-400 block mb-2">เลขผู้เสียภาษี</label><input id="set-company-tax" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm mono focus:border-orange-500 focus:outline-none" value="' + (cfg.company_tax_id||defaultConfig.company_tax_id) + '" maxlength="13"></div>' +
-    '<div><label class="text-sm text-slate-400 block mb-2">ที่อยู่</label><textarea id="set-company-addr" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none h-20 resize-none">' + (cfg.company_address||defaultConfig.company_address) + '</textarea></div>' +
-    '<div class="grid grid-cols-2 gap-4"><div><label class="text-sm text-slate-400 block mb-2">โทรศัพท์</label><input id="set-company-phone" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + (cfg.company_phone||defaultConfig.company_phone) + '"></div><div><label class="text-sm text-slate-400 block mb-2">อีเมล</label><input id="set-company-email" type="email" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + (cfg.company_email||defaultConfig.company_email) + '"></div></div>' +
-    '<div><label class="text-sm text-slate-400 block mb-2">Website</label><input id="set-company-website" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + (cfg.company_website||defaultConfig.company_website||'') + '"></div>' +
+    '<div><label class="text-sm text-slate-400 block mb-2">ชื่อบริษัท</label><input id="set-company-name" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + esc(cfg.company_name||defaultConfig.company_name) + '"></div>' +
+    '<div><label class="text-sm text-slate-400 block mb-2">เลขผู้เสียภาษี</label><input id="set-company-tax" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm mono focus:border-orange-500 focus:outline-none" value="' + esc(cfg.company_tax_id||defaultConfig.company_tax_id) + '" maxlength="13"></div>' +
+    '<div><label class="text-sm text-slate-400 block mb-2">ที่อยู่</label><textarea id="set-company-addr" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none h-20 resize-none">' + esc(cfg.company_address||defaultConfig.company_address) + '</textarea></div>' +
+    '<div class="grid grid-cols-2 gap-4"><div><label class="text-sm text-slate-400 block mb-2">โทรศัพท์</label><input id="set-company-phone" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + esc(cfg.company_phone||defaultConfig.company_phone) + '"></div><div><label class="text-sm text-slate-400 block mb-2">อีเมล</label><input id="set-company-email" type="email" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + esc(cfg.company_email||defaultConfig.company_email) + '"></div></div>' +
+    '<div><label class="text-sm text-slate-400 block mb-2">Website</label><input id="set-company-website" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + esc(cfg.company_website||defaultConfig.company_website||'') + '"></div>' +
     '<div class="pt-4 border-t border-slate-700"><h3 class="text-sm font-semibold text-white mb-3">ข้อมูลผู้จัดทำเอกสาร</h3>' +
-    '<div class="grid md:grid-cols-2 gap-4"><div><label class="text-sm text-slate-400 block mb-2">ชื่อผู้จัดทำ / Prepared By</label><input id="set-prepare-name" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + (cfg.company_prepare_name||defaultConfig.company_prepare_name||'') + '"></div>' +
-    '<div><label class="text-sm text-slate-400 block mb-2">ตำแหน่ง / Position</label><input id="set-prepare-title" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + (cfg.company_prepare_title||defaultConfig.company_prepare_title||'') + '"></div></div>' +
+    '<div class="grid md:grid-cols-2 gap-4"><div><label class="text-sm text-slate-400 block mb-2">ชื่อผู้จัดทำ / Prepared By</label><input id="set-prepare-name" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + esc(cfg.company_prepare_name||defaultConfig.company_prepare_name||'') + '"></div>' +
+    '<div><label class="text-sm text-slate-400 block mb-2">ตำแหน่ง / Position</label><input id="set-prepare-title" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + esc(cfg.company_prepare_title||defaultConfig.company_prepare_title||'') + '"></div></div>' +
     '<p class="text-xs text-slate-500 mt-2">ข้อมูลนี้จะไปขึ้นในช่อง Prepared By ของ Quotation, Invoice และ Receipt | Tax Invoice</p></div>' +
     '<div class="pt-4 border-t border-slate-700"><h3 class="text-sm font-semibold text-white mb-3">รูปสำหรับเอกสาร</h3><div class="grid md:grid-cols-2 xl:grid-cols-4 gap-4">' +
       assetUploadBlock('company_logo_data','set-company-logo','preview-company-logo','โลโก้บริษัท') +
@@ -3995,6 +4015,10 @@ function renderSettings(el) {
 }
 
 async function dsrDownloadBackup() {
+  if (dsrHasPendingDraft() || (window.dataSdk.isSavingDrafts && window.dataSdk.isSavingDrafts())) {
+    showToast('กรุณาบันทึกทั้งหมด หรือยกเลิกฉบับร่างก่อนดาวน์โหลด Backup', 'error');
+    return;
+  }
   if (!window.dataSdk || !window.dataSdk.downloadBackup) return;
   try {
     var result = await window.dataSdk.downloadBackup();
@@ -4098,7 +4122,7 @@ function buildWHTForm(splitId) {
   const monthName = whtDate.toLocaleString('en-US', { month:'short' });
   const yyyy = whtDate.getFullYear()+543;
   const amount = roundHU(inst ? (inst.amount || 0) : (split.partner_amount || 0));
-  const whtRateForDoc = inst ? (inst.wht_rate || split.partner_wht_rate || 3) : (split.partner_wht_rate || 3);
+  const whtRateForDoc = inst ? (inst.wht_rate ?? split.partner_wht_rate ?? 3) : (split.partner_wht_rate ?? 3);
   const whtAmt = roundHU(inst ? (inst.wht_amount || roundHU(amount * whtRateForDoc / 100)) : (split.partner_wht_amount || roundHU(amount * whtRateForDoc / 100)));
   const payerName = cfg.company_name || defaultConfig.company_name;
   const payerAddress = cfg.company_address || defaultConfig.company_address;
@@ -4224,7 +4248,7 @@ function getPartnerPaymentContext(refId) {
   const projectId = inst ? (inst.project_id || sp.project_id) : sp.project_id;
   const project = allData.find(function(r) { return r.record_type === 'project' && r.project_id === projectId; }) || {};
   const partnerProfile = getProfiles('partner').find(function(p) { return p.name === sp.partner_name; }) || {};
-  const whtRate = inst ? (inst.wht_rate || sp.partner_wht_rate || 3) : (sp.partner_wht_rate || 3);
+  const whtRate = inst ? (inst.wht_rate ?? sp.partner_wht_rate ?? 3) : (sp.partner_wht_rate ?? 3);
   const gross = inst ? (inst.amount || 0) : (sp.partner_amount || roundHU((sp.partner_net_amount || 0) + (sp.partner_wht_amount || 0)));
   const wht = inst ? (inst.wht_amount || roundHU(gross * whtRate / 100)) : (sp.partner_wht_amount || roundHU(gross * whtRate / 100));
   const net = inst ? (inst.net_amount || roundHU(gross - wht)) : (sp.partner_net_amount || roundHU(gross - wht));
@@ -4578,6 +4602,23 @@ function dsrRestoreFormDrafts() {
       });
     } catch (ignore) {}
   });
+}
+
+function dsrFlushFormDrafts() {
+  _dsrFormDraftTimers.forEach(function(timer, form) {
+    dsrSaveFormDraft(form);
+    clearTimeout(timer);
+    _dsrFormDraftTimers.delete(form);
+  });
+}
+
+function dsrCancelForm(areaId) {
+  var area = document.getElementById(areaId);
+  if (!area) return;
+  area.querySelectorAll('form,[data-dsr-draft-group]').forEach(dsrClearFormDraft);
+  area.innerHTML = '';
+  if (!_dsrMemoryFormDrafts.size && !_dsrFormDraftTimers.size) _dsrDirty = false;
+  dsrShowSyncStatus(_dsrLastSyncState || {});
 }
 
 function dsrClearFormDraft(form) {
@@ -6090,9 +6131,9 @@ function htmlText(v) { return esc(v || '').replace(/\n/g, '<br>'); }
       if (!rows.length) throw new Error('ไม่พบรายการ BOQ ในไฟล์นี้');
       var lastCat = '';
       _boqAI.items = rows.map(function(r,i){
-        var qty = Number(r.qty || r.quantity || 1) || 1;
+        var qty = Number(r.qty ?? r.quantity ?? 1);
         var unitPrice = Number(r.unitPrice || r.unit_price || r.rate || 0) || 0;
-        var total = Number(r.total || r.amount || r.supplierTotal || (qty * unitPrice)) || 0;
+        var total = Number(r.total ?? r.amount ?? r.supplierTotal ?? (qty * unitPrice)) || 0;
         if (!unitPrice && qty) unitPrice = sRound(total / qty);
         var cat = cleanSupplierCategory(r.category || r.supplierCategory || r.section || r.group || '', r.item || r.description || '');
         if (cat && cat !== 'Uncategorized / ไม่ระบุหมวด') lastCat = cat;
@@ -6324,19 +6365,18 @@ function dsrRenderDraftChange(record) {
   }, 0);
 }
 async function dsrPrepareDraftsForSave() {
-  Object.keys(_dsrLiveSaveTimers).forEach(function(key) {
+  for (const key of Object.keys(_dsrLiveSaveTimers)) {
     var entry = _dsrLiveSaveTimers[key]; clearTimeout(entry.timer); delete _dsrLiveSaveTimers[key];
-    window.dataSdk.updateLocal(entry.record);
-  });
-  Object.keys(_qt).forEach(function(id) {
+    await window.dataSdk.updateLocal(entry.record);
+  }
+  for (const id of Object.keys(_qt)) {
     var st = _qt[id];
-    if (!st || (!st.dirty && !st.debounce)) return;
+    if (!st || (!st.dirty && !st.debounce)) continue;
     if (st.debounce) clearTimeout(st.debounce);
     st.debounce = null;
-    var totals = _qtCalc(st);
-    var record = Object.assign({}, st.q, {items_json:JSON.stringify(st.items),subtotal:totals.sub,vat_amount:totals.vat,client_wht_amount:totals.wht,grand_total:totals.tot});
-    window.dataSdk.updateLocal(record);
-  });
+    var saved = await recalcQuotation(st.q, st.items, 'local');
+    if (!saved || !saved.isOk) throw new Error('เตรียมข้อมูลใบเสนอราคาไม่สำเร็จ');
+  }
 }
 async function dsrSaveAll(appliedForm) {
   var button = document.getElementById('dsr-save-all');

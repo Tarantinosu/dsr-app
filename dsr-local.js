@@ -258,6 +258,90 @@
       }
     }
 
+    function cacheRecords(records) {
+      try { root.localStorage.setItem('DSR_data', JSON.stringify(records)); }
+      catch (ignore) { try { root.localStorage.removeItem('DSR_data'); } catch (ignoreRemove) {} }
+    }
+
+    // IndexedDB serializes read/write transactions across tabs. Reserve numbers
+    // separately from drafts so abandoned documents can leave gaps, never duplicates.
+    async function reserveDocumentNumber(prefix, field, recordId, suggestedMax) {
+      var database = await db();
+      var tx = database.transaction([STORE_NAME, META_STORE_NAME], 'readwrite');
+      var done = transactionDone(tx);
+      var recordsRequest = tx.objectStore(STORE_NAME).getAll();
+      var meta = tx.objectStore(META_STORE_NAME);
+      var counterRequest = meta.get('documentCounter:' + prefix);
+      var ownerKey = 'documentReservation:' + prefix + ':' + recordId;
+      var ownerRequest = meta.get(ownerKey);
+      var result;
+      var reservationError;
+      var ready = 0;
+      function collect() {
+        if (++ready !== 3) return;
+        try {
+          var existing = (recordsRequest.result || []).find(function (r) { return r.__backendId === recordId; });
+          if (existing && existing[field]) { result = existing[field]; return; }
+          if (ownerRequest.result) { result = ownerRequest.result.value; return; }
+          var maximum = Math.max(Number(suggestedMax) || 0, Number(counterRequest.result && counterRequest.result.value) || 0);
+          (recordsRequest.result || []).forEach(function (r) {
+            ['doc_number', 'invoice_number', 'receipt_number'].forEach(function (key) {
+              var number = String(r[key] || '');
+              if (number.indexOf(prefix + '-') === 0) maximum = Math.max(maximum, parseInt(number.slice(prefix.length + 1), 10) || 0);
+            });
+          });
+          result = prefix + '-' + String(maximum + 1).padStart(3, '0');
+          meta.put({ key: 'documentCounter:' + prefix, value: maximum + 1 });
+          meta.put({ key: ownerKey, value: result });
+        } catch (error) {
+          reservationError = error;
+          tx.abort();
+        }
+      }
+      recordsRequest.onsuccess = collect;
+      counterRequest.onsuccess = collect;
+      ownerRequest.onsuccess = collect;
+      await done.catch(function(error) { throw reservationError || error; });
+      return result;
+    }
+
+    async function commitOperations(operations) {
+      if (!operations.length) return { isOk: true, saved: 0 };
+      pending++;
+      emitStatus();
+      try {
+        var database = await db();
+        var tx = database.transaction(STORE_NAME, 'readwrite');
+        var done = transactionDone(tx);
+        try {
+          operations.forEach(function (operation) {
+            var record = clone(operation.record);
+            if (!record || !record.__backendId || ['create', 'update', 'delete'].indexOf(operation.action) < 0) throw new Error('ข้อมูลรายการบันทึกไม่ถูกต้อง');
+            if (operation.action === 'delete') tx.objectStore(STORE_NAME).delete(record.__backendId);
+            else tx.objectStore(STORE_NAME).put(record);
+          });
+        } catch (error) {
+          tx.abort();
+          await done.catch(function () {});
+          throw error;
+        }
+        await done;
+        var records = await getAll();
+        setMemory(records);
+        cacheRecords(records);
+        if (handler && handler.onDataChanged) handler.onDataChanged(clone(records));
+        lastError = null;
+        scheduleLiveFolderSave();
+        return { isOk: true, saved: operations.length };
+      } catch (error) {
+        lastError = error;
+        return { isOk: false, error: error.message || 'local-database' };
+      } finally {
+        pending--;
+        emitStatus();
+      }
+    }
+
     async function exportBackup() {
       var records = await getAll();
       var config = getDeviceConfig();
@@ -479,20 +563,46 @@
       if (!backup || backup.format !== 'DSR_OFFLINE_BACKUP' || !Array.isArray(backup.records)) {
         throw new Error('รูปแบบไฟล์ Backup ไม่ถูกต้อง');
       }
+      if (backup.version != null && backup.version !== 1 && backup.version !== 2) throw new Error('ไม่รองรับรุ่นไฟล์ Backup นี้');
+      var ids = new Set();
       var records = backup.records.map(function (record) {
-        var next = clone(record || {});
-        if (!next.__backendId) next.__backendId = makeId();
-        return next;
+        if (!record || typeof record !== 'object' || Array.isArray(record) ||
+            typeof record.__backendId !== 'string' || !record.__backendId.trim() ||
+            typeof record.record_type !== 'string' || !record.record_type.trim() || ids.has(record.__backendId)) {
+          throw new Error('รายการใน Backup ไม่ถูกต้องหรือมีรหัสซ้ำ · ข้อมูลเดิมยังไม่ถูกเปลี่ยน');
+        }
+        ids.add(record.__backendId);
+        if (record.record_type === 'quotation' && record.items_json != null) {
+          var items;
+          try { items = JSON.parse(record.items_json); } catch (ignore) {}
+          if (!Array.isArray(items)) throw new Error('รายการใบเสนอราคาใน Backup ไม่ถูกต้อง');
+        }
+        return clone(record);
       });
-      await replaceAll(records);
-      if (backup.config && typeof backup.config === 'object') {
-        await saveDeviceConfig(backup.config);
-        var compactConfig = clone(backup.config);
+      if (backup.config != null && (typeof backup.config !== 'object' || Array.isArray(backup.config))) throw new Error('ค่าบริษัทใน Backup ไม่ถูกต้อง');
+      var config = backup.config == null ? null : clone(backup.config);
+      var database = await db();
+      var tx = database.transaction([STORE_NAME, META_STORE_NAME], 'readwrite');
+      var done = transactionDone(tx);
+      try {
+        var store = tx.objectStore(STORE_NAME);
+        store.clear();
+        records.forEach(function (record) { store.put(record); });
+        if (config) tx.objectStore(META_STORE_NAME).put({ key: 'deviceConfig', value: config });
+      } catch (error) {
+        tx.abort();
+        await done.catch(function () {});
+        throw error;
+      }
+      await done;
+      if (config) {
+        deviceConfigCache = clone(config);
+        var compactConfig = clone(config);
         ['company_logo_data','company_signature_data','company_stamp_data','company_payment_qr_data'].forEach(function (key) { delete compactConfig[key]; });
         try { root.localStorage.setItem('DSR_config', JSON.stringify(compactConfig)); } catch (ignore) {}
-        if (root.elementSdk) root.elementSdk.config = clone(backup.config);
+        if (root.elementSdk) root.elementSdk.config = clone(config);
       }
-      root.localStorage.setItem('DSR_data', JSON.stringify(records));
+      cacheRecords(records);
       setMemory(records);
       if (handler && typeof handler.onDataChanged === 'function') handler.onDataChanged(clone(records));
       lastError = null;
@@ -635,6 +745,8 @@
       setUrl: function () { return Promise.resolve({ isOk: true, offline: true }); },
       isBusy: function () { return pending > 0 || reading || folderWriteActive || folderSaveScheduled; },
       retryUpdates: function () { return Promise.resolve([]); },
+      commitOperations: commitOperations,
+      reserveDocumentNumber: reserveDocumentNumber,
       exportBackup: exportBackup,
       downloadBackup: downloadBackup,
       importBackup: importBackup,
