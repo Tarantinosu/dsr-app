@@ -63,6 +63,8 @@
     var url = '';
     var syncEnabled = false;
     var transportMode = 'direct';
+    var proxyUnavailable = false;
+    var localWriteVersion = 0;
 
     try {
       url = storage.getItem('DSR_script_url') || '';
@@ -94,7 +96,7 @@
     }
 
     async function remoteFetch(target, method, body, signal) {
-      if (!isLocalDesktop()) {
+      if (!isLocalDesktop() || proxyUnavailable) {
         transportMode = 'direct';
         return fetcher(target, {
           method: method,
@@ -113,13 +115,20 @@
       var form = 'target_b64=' + encodeURIComponent(utf8Base64(target)) +
         '&method=' + encodeURIComponent(method) +
         (method === 'POST' ? '&body_b64=' + encodeURIComponent(utf8Base64(body)) : '');
-      return fetcher('/__dsr_google_proxy', {
+      var response = await fetcher('/__dsr_google_proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
         body: form,
         cache: 'no-store',
         signal: signal
       });
+      // A plain static server has no launcher proxy. Only retry when the
+      // route/method is unsupported, never after an ambiguous network failure.
+      if ([404, 405, 501].indexOf(response.status) >= 0) {
+        proxyUnavailable = true;
+        return remoteFetch(target, method, body, signal);
+      }
+      return response;
     }
 
     function cleanDetail(value) {
@@ -559,17 +568,32 @@
       if (!url) return { isOk: false, error: 'not-configured' };
       if (options.hasPendingDraft && options.hasPendingDraft()) return { isOk: false, error: 'unsaved-changes' };
       if (root.navigator && root.navigator.onLine === false) return { isOk: false, error: 'offline' };
+      var readVersion = localWriteVersion;
       try {
         var result = await fetchServerRecords();
         if (!result.isOk) {
           rememberSyncError(result);
           return result;
         }
+        if (readVersion !== localWriteVersion || local.isBusy() ||
+            (options.hasPendingDraft && options.hasPendingDraft())) {
+          return { isOk: false, error: 'unsaved-changes' };
+        }
         await reconcileUncertainCreates(result.records);
         // Unsent local records are submitted only by an explicit Save.
         var operations = await listOperations();
         var merged = applyOperations(result.records, operations);
-        await local.replaceFromSync(merged);
+        if (readVersion !== localWriteVersion || local.isBusy() ||
+            (options.hasPendingDraft && options.hasPendingDraft())) {
+          return { isOk: false, error: 'unsaved-changes' };
+        }
+        var applied = await local.replaceFromSync(merged);
+        if (!applied || !applied.isOk) {
+          var failure = applied || { error: 'local-database' };
+          rememberSyncError(failure);
+          return { isOk: false, error: failure.error || 'local-database' };
+        }
+        if (typeof options.onRemoteData === 'function') options.onRemoteData();
         if (!syncUncertain) clearSyncError();
         lastSyncAt = new Date().toISOString();
         try { storage.setItem('DSR_google_last_sync_at', lastSyncAt); } catch (ignore) {}
@@ -610,7 +634,9 @@
     }
 
     async function localFirstWrite(action, record) {
+      localWriteVersion++;
       var result = await local[action](record);
+      localWriteVersion++;
       if (!result || !result.isOk) return result;
       var payload = result.record || record;
       try {
@@ -631,7 +657,9 @@
     // Draft edits never touch the Google queue. This keeps number inputs instant
     // while still protecting the current value in IndexedDB on this device.
     async function localOnlyWrite(action, record) {
+      localWriteVersion++;
       var result = await local[action](record);
+      localWriteVersion++;
       if (result && result.isOk) {
         result.localOnly = true;
         result.syncQueued = false;
@@ -686,6 +714,7 @@
       deleteLocal: function (record) { return localOnlyWrite('delete', record); },
       flushGoogle: flushGoogle,
       refresh: function () { return syncNow(true); },
+      refreshLocal: function () { return local.refresh(); },
       getUrl: function () { return url; },
       setUrl: async function (value) {
         var nextUrl = String(value || '').trim();

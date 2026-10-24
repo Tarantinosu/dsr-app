@@ -1,5 +1,5 @@
 /* DSR+ app shell: keeps the interface available when the network is unavailable. */
-var CACHE_NAME = 'dsr-web-v18-manual-save';
+var CACHE_NAME = 'dsr-web-v19-local-refresh';
 var APP_SHELL = [
   './',
   './index.html',
