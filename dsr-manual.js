@@ -40,7 +40,7 @@
       if(!id){id='local-'+(root.crypto&&root.crypto.randomUUID?root.crypto.randomUUID():Date.now()+'-'+Math.random().toString(36).slice(2));if(record)record.__backendId=id;}
       payload.__backendId=id;
       var previous=drafts.get(id);
-      if(action==='delete'&&previous&&previous.action==='create'&&!inflight.has(id))drafts.delete(id);
+      if(action==='delete'&&previous&&previous.action==='create'&&!inflight.has(id)&&!(base.hasUnresolvedSave&&base.hasUnresolvedSave()))drafts.delete(id);
       else drafts.set(id,{action:previous&&previous.action==='create'&&action!=='delete'?'create':action,record:payload,version:++version});
       publish();
       if(options.onStaged)options.onStaged(action,payload);

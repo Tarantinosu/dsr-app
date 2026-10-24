@@ -423,7 +423,7 @@
       }
     }
 
-    async function saveJsonFile() {
+    async function saveJsonFile(suppliedBackup) {
       if (jsonSaving) return { isOk: false, busy: true, error: 'กำลังเขียนไฟล์ JSON' };
       var handle = await getJsonHandle();
       if (!handle) return { isOk: false, notConfigured: true };
@@ -434,7 +434,7 @@
       var writable = null;
       try {
         if (await directoryPermission(handle, false) !== 'granted') throw new Error('กรุณาเลือกหรืออนุญาตไฟล์ JSON อีกครั้งในหน้าตั้งค่า');
-        var backup = await exportBackup();
+        var backup = suppliedBackup || await exportBackup();
         writable = await handle.createWritable();
         await writable.write(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' }));
         await writable.close();

@@ -2,6 +2,10 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const createCloud = require('../../dsr-cloud.js');
+const createManual = require('../../dsr-manual.js');
 
 let db;
 const owner = '00000000-0000-4000-8000-000000000001';
@@ -107,4 +111,25 @@ test('migration can be rerun without resetting existing records or memberships',
   const result = await db.query('select version from public.dsr_document');
   assert.equal(result.rows[0].version, 2);
   assert.equal((await db.query('select count(*) as n from public.dsr_members')).rows[0].n, 2);
+});
+test('real adapter saves to PostgreSQL and a second stale adapter cannot overwrite it', async () => {
+  const client = {auth:{getSession:async()=>({data:{session:{user:{email:'test@example.test'}}}})},
+    rpc:async(name,p)=>asUser(owner,async()=>{
+      try {
+        const result = name==='dsr_read'
+          ? await db.query('select public.dsr_read($1) as result',[p.p_known_version])
+          : await db.query('select public.dsr_save($1,$2,$3) as result',[p.p_request_id,p.p_expected_version,p.p_payload]);
+        return {data:result.rows[0].result,error:null};
+      } catch(error) { return {data:null,error}; }
+    })};
+  function app(){let records=[];const sdk=createManual(createCloud,{client,setRecords:r=>{records=r;}});return {sdk,get records(){return records;}};}
+  const a=app(),b=app();
+  await a.sdk.init({onDataChanged(){}});await b.sdk.init({onDataChanged(){}});
+  await a.sdk.update({...a.records[0],name:'A'});
+  assert.equal((await a.sdk.commitDrafts()).isOk,true);
+  await b.sdk.update({...b.records[0],name:'B'});
+  assert.equal((await b.sdk.commitDrafts()).conflict,true);
+  assert.equal(b.sdk.draftCount(),1);
+  const stored=(await db.query('select payload from public.dsr_document')).rows[0].payload;
+  assert.equal(stored.records[0].name,'A');
 });
