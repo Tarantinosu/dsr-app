@@ -1989,8 +1989,6 @@ function _qtSave(qId) {
   if (index >= 0) allData[index] = updated;
   st.dirty = true;
   dsrMarkManualPending(qId);
-  var stateLabel = document.getElementById('qt-local-state-' + qId);
-  if (stateLabel) stateLabel.textContent = 'แก้ไขบนหน้าจอแล้ว · ยังไม่บันทึก';
   st.debounce = setTimeout(function () {
     st.debounce = null;
     // Keystrokes save to IndexedDB only. Google is contacted by the Save button.
@@ -2121,9 +2119,6 @@ function renderQuotationEditor(q, items, locked, projId) {
         '<option value="3"'+((q.client_wht_rate||0)===3?' selected':'')+'>3%</option>'+
         '<option value="5"'+((q.client_wht_rate||0)===5?' selected':'')+'>5%</option></select></div>'+
       '</div></div>'+
-    (!locked?'<div class="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border border-orange-500/40 bg-orange-950/20 p-3">'+
-      '<div><div id="qt-local-state-'+qId+'" class="text-xs font-semibold text-orange-300">'+(_dsrManualPending.has(qId)?'แก้ไขบนหน้าจอแล้ว · ยังไม่บันทึก':'พร้อมแก้ไขแบบ Offline')+'</div><div class="text-[11px] text-slate-500 mt-0.5">ระหว่างพิมพ์จะไม่เรียก Google Script</div></div>'+
-      '<button type="button" id="qt-save-'+qId+'" class="min-h-[42px] px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-sm font-semibold flex items-center justify-center gap-2" onclick="saveQuotationToGoogle(\''+qId+'\',this)"><i data-lucide="save" class="w-4 h-4"></i> Save ไป Google</button></div>':'')+
     metaCard+
     '<div class="mb-4 pb-4 border-b border-slate-700">'+
       '<div class="font-semibold text-white">'+(cfg.company_name||defaultConfig.company_name)+'</div>'+
@@ -2163,36 +2158,6 @@ async function updateQuotationMeta(qId, field, value) {
   dsrMarkManualPending(qId);
   var writer = window.dataSdk.updateLocal || window.dataSdk.update;
   await writer.call(window.dataSdk, updated);
-  var stateLabel = document.getElementById('qt-local-state-' + qId);
-  if (stateLabel) stateLabel.textContent = 'แก้ไขบนหน้าจอแล้ว · ยังไม่บันทึก';
-}
-
-async function saveQuotationToGoogle(qId, button) {
-  var st = _qt[qId];
-  if (!st) return;
-  if (st.debounce) { clearTimeout(st.debounce); st.debounce = null; }
-  button = button || document.getElementById('qt-save-' + qId);
-  if (button) { button.disabled = true; button.textContent = 'กำลังบันทึก...'; }
-  var result = await recalcQuotation(st.q, st.items, 'google');
-  if (!result || !result.isOk) {
-    showToast('บันทึกใบเสนอราคาไม่สำเร็จ', 'error');
-    if (button) { button.disabled = false; button.textContent = 'Save ไป Google'; }
-    return;
-  }
-  dsrClearManualPending(qId);
-  st.dirty = false;
-  var syncResult = window.dataSdk.flushGoogle ? await window.dataSdk.flushGoogle() : { isOk:false, error:'not-supported' };
-  var stateLabel = document.getElementById('qt-local-state-' + qId);
-  if (syncResult && syncResult.isOk) {
-    if (stateLabel) stateLabel.textContent = 'บันทึกลงเครื่องและ Google แล้ว';
-    showToast('บันทึกลงเครื่องและ Google แล้ว');
-  } else {
-    var info = window.dataSdk.getSyncInfo ? await window.dataSdk.getSyncInfo() : null;
-    var reason = info && info.error ? info.error : 'รอส่ง Google';
-    if (stateLabel) stateLabel.textContent = 'บันทึกในเครื่องแล้ว · ' + reason;
-    showToast('ข้อมูลไม่หาย · ' + reason, 'error');
-  }
-  if (button) { button.disabled = false; button.textContent = 'Save ไป Google'; }
 }
 
 async function createQuotation(projId) {
