@@ -6,6 +6,19 @@
   try {cloudMode=root.localStorage.getItem('DSR_storage_mode')==='cloud';}catch(ignore){}
   root.dsrCloudMode=cloudMode;
   function setText(id,text){var el=document.getElementById(id);if(el)el.textContent=text;}
+  function hide(id,hidden){var el=document.getElementById(id);if(el)el.hidden=hidden;}
+  root.dsrRenderCloudSettings=function(){
+    var panel=document.getElementById('dsr-cloud-settings');if(!panel)return;
+    panel.innerHTML='<h2 class="text-lg font-semibold text-white mb-3">บัญชีและการเชื่อมต่อข้อมูล</h2>'+
+      '<div id="dsr-cloud-mode" role="status"></div>'+
+      '<p class="text-xs text-slate-400 mt-2">ข้อมูลร่วมกันใช้ฐานกลาง ส่วนข้อมูลเดิมในเครื่องเก็บแยกไว้เพื่อสำรองและตรวจสอบ</p>'+
+      '<button type="button" id="dsr-cloud-connect" class="dsr-cloud-button" onclick="dsrSwitchStorage(\'cloud\')">ใช้ข้อมูลร่วมกัน · เข้าสู่ระบบ</button>'+
+      '<div id="dsr-cloud-account" hidden><div id="dsr-cloud-email" style="overflow-wrap:anywhere;margin-top:8px"></div><button type="button" onclick="dsrCloudSignOut()" style="padding:12px">ออกจากระบบ</button><button type="button" onclick="dsrSwitchStorage(\'local\')" style="padding:12px">ดูข้อมูลเดิมในเครื่อง</button></div>'+
+      '<div id="dsr-cloud-conflict" hidden role="alert" style="color:#fbbf24;margin:12px 0">เครื่องอื่นบันทึกข้อมูลใหม่แล้ว ฉบับร่างของคุณยังอยู่<button type="button" class="dsr-cloud-button" onclick="dsrCloudReload()">โหลดข้อมูลล่าสุด · ทิ้งฉบับร่าง</button></div>'+
+      '<button id="dsr-cloud-draft-download" hidden type="button" onclick="dsrCloudDownloadDraft()" style="padding:12px">ดาวน์โหลดฉบับร่างก่อนโหลดใหม่</button>'+
+      '<p class="text-xs text-slate-400 mt-3">เพิ่ม/แก้/ลบเป็นฉบับร่างจนกดบันทึกทั้งหมด · ปิดหรือรีโหลดก่อนบันทึก ฉบับร่างจะหาย</p>';
+    render();
+  };
   function error(text){setText('dsr-cloud-message',text);}
   function sdk(){return root.dataSdk;}
   function canLeave(){
@@ -36,13 +49,13 @@
     var dialog=document.getElementById('dsr-cloud-dialog');if(!dialog)return;
     var cloud=cloudMode&&sdk()&&sdk().isCloud;
     setText('dsr-cloud-mode',cloud?'ข้อมูลร่วมกันผ่าน Supabase':'ข้อมูลแยกในเบราว์เซอร์นี้');
-    document.getElementById('dsr-cloud-connect').hidden=cloud;
-    document.getElementById('dsr-cloud-account').hidden=!cloud;
+    hide('dsr-cloud-connect',cloud);
+    hide('dsr-cloud-account',!cloud);
     if(!cloud)return;
     var s=state||{ready:false,loginRequired:true};
     setText('dsr-cloud-email',s.email||'ยังไม่ได้เข้าสู่ระบบ');
-    document.getElementById('dsr-cloud-conflict').hidden=!s.conflict;
-    document.getElementById('dsr-cloud-draft-download').hidden=!s.ready;
+    hide('dsr-cloud-conflict',!s.conflict);
+    hide('dsr-cloud-draft-download',!s.ready);
     if(s.ready&&!s.empty){if(dialog.open)dialog.close();return;}
     if(!dialog.open)dialog.showModal();
     var importing=s.ready&&s.empty;

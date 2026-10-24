@@ -55,6 +55,7 @@ class CloudFlow(unittest.TestCase):
         route.fulfill(status=status, content_type='application/json', body=json.dumps(response))
 
     def enter_cloud(self):
+        self.page.evaluate("navigate('settings')")
         self.page.locator('#dsr-cloud-connect').click()
         self.page.wait_for_selector('#dsr-cloud-dialog[open]')
 
@@ -119,6 +120,8 @@ class CloudFlow(unittest.TestCase):
             second.locator('#dsr-save-all').click()
             second.wait_for_function('dataSdk.getCloudState().conflict')
             self.assertEqual(second.evaluate('dataSdk.draftCount()'), 1)
+            self.assertIn('เปิดตั้งค่า', second.locator('#dsr-save-status').inner_text())
+            second.evaluate("navigate('settings')")
             self.assertTrue(second.locator('#dsr-cloud-conflict').is_visible())
             self.assertEqual(next(r for r in self.central['records'] if r['record_type']=='project')['project_name'], 'Machine A')
         finally:
@@ -155,3 +158,16 @@ class CloudFlow(unittest.TestCase):
         self.page.evaluate("navigate('settings')")
         self.assertIsNone(self.page.evaluate('window.__cloudInjected'))
         self.assertEqual(self.page.locator('#preview-company-logo img').count(), 0)
+
+    def test_mobile_toolbar_is_compact_and_account_controls_live_in_settings(self):
+        self.imported()
+        self.page.set_viewport_size({'width':360,'height':800})
+        self.page.evaluate("navigate('dashboard')")
+        self.assertEqual(self.page.locator('#sidebar #dsr-cloud-account').count(), 0)
+        self.assertLess(self.page.locator('.dsr-save-tools').bounding_box()['height'], 110)
+        self.assertGreater(self.page.locator('#main-content').bounding_box()['height'], 400)
+        self.page.locator('.dsr-save-actions').get_by_role('button', name='ตั้งค่า', exact=True).click()
+        self.assertTrue(self.page.locator('#dsr-cloud-settings #dsr-cloud-account').is_visible())
+        self.assertIn('test@example.test', self.page.locator('#dsr-cloud-settings').inner_text())
+        self.page.evaluate("navigate('dashboard'); navigate('settings')")
+        self.assertTrue(self.page.locator('#dsr-cloud-account').is_visible())

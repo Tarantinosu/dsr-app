@@ -108,6 +108,10 @@
 })();
   </script>
   <style>
+.dsr-save-tools{padding:12px;border-top:1px solid #292929;font-size:12px}
+.dsr-save-actions{display:flex;gap:8px}.dsr-save-actions button{min-height:44px;padding:8px 10px;border:1px solid #444;border-radius:6px;white-space:nowrap}
+#dsr-save-all{flex:1;background:#ea580c;color:white;border-color:#ea580c}
+@media(max-width:767px){.dsr-save-tools{padding:8px 12px}#dsr-save-status{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#main-content{min-height:0}}
 #dsr-cloud-dialog{background:#0f172a;color:#f8fafc;border:1px solid #475569;border-radius:12px;width:calc(100% - 32px);max-width:480px;max-height:90dvh;padding:0}
 #dsr-cloud-dialog::backdrop{background:rgba(0,0,0,.85)}
 .dsr-cloud-sheet{padding:24px}.dsr-cloud-sheet h1{font-size:22px;font-weight:700;margin-bottom:12px}.dsr-cloud-sheet h2{font-size:18px;font-weight:600;margin-top:20px}
@@ -313,16 +317,10 @@ html,body{height:100%;margin:0}
       <button class="nav-item whitespace-nowrap md:whitespace-normal flex items-center gap-3 flex-shrink-0 md:flex-shrink" data-page="logs" onclick="navigate('logs')"><i data-lucide="scroll-text" class="w-4 h-4 flex-shrink-0"></i><span class="hidden md:inline">ประวัติ</span></button>
       <button class="nav-item whitespace-nowrap md:whitespace-normal flex items-center gap-3 flex-shrink-0 md:flex-shrink" data-page="settings" onclick="navigate('settings')"><i data-lucide="settings" class="w-4 h-4 flex-shrink-0"></i><span class="hidden md:inline">ตั้งค่า</span></button>
     </nav>
-    <div class="no-print" style="padding:12px;border-top:1px solid #292929;font-size:12px">
-      <div id="dsr-cloud-mode" role="status">ข้อมูลแยกในเบราว์เซอร์นี้</div>
-      <button type="button" id="dsr-cloud-connect" class="dsr-cloud-button" onclick="dsrSwitchStorage('cloud')">ใช้ข้อมูลร่วมกัน · เข้าสู่ระบบ</button>
-      <div id="dsr-cloud-account" hidden><div id="dsr-cloud-email" style="overflow-wrap:anywhere;margin-top:8px"></div><button type="button" onclick="dsrCloudSignOut()" style="padding:8px">ออกจากระบบ</button><button type="button" onclick="dsrSwitchStorage('local')" style="padding:8px">ดูข้อมูลเดิมในเครื่อง</button></div>
-      <div id="dsr-cloud-conflict" hidden role="alert" style="color:#fbbf24;margin:12px 0">เครื่องอื่นบันทึกข้อมูลใหม่แล้ว ฉบับร่างของคุณยังอยู่<button type="button" class="dsr-cloud-button" onclick="dsrCloudReload()">โหลดข้อมูลล่าสุด · ทิ้งฉบับร่าง</button></div>
-      <button id="dsr-cloud-draft-download" hidden type="button" onclick="dsrCloudDownloadDraft()" style="padding:8px">ดาวน์โหลดฉบับร่างก่อนโหลดใหม่</button>
+    <div class="no-print dsr-save-tools">
       <div id="dsr-save-status" role="status" aria-live="polite" style="margin-bottom:8px;color:#94a3b8">กำลังโหลดข้อมูล…</div>
-      <button id="dsr-save-all" type="button" onclick="dsrSaveAll()" style="padding:8px 10px;margin-bottom:8px;background:#ea580c;color:white;border-radius:6px;width:100%">บันทึกทั้งหมด</button>
-      <div style="font-size:11px;color:#94a3b8;margin-bottom:8px">เพิ่ม/แก้/ลบเป็นฉบับร่างจนกดบันทึก · ปิดหรือรีโหลดก่อนบันทึก ฉบับร่างจะหาย</div>
-      <button id="dsr-refresh-button" type="button" onclick="dsrRequestRefresh()" style="padding:6px 10px;border:1px solid #444;border-radius:6px">↻ Refresh</button>
+      <div class="dsr-save-actions"><button id="dsr-save-all" type="button" onclick="dsrSaveAll()">บันทึกทั้งหมด</button>
+      <button id="dsr-refresh-button" type="button" onclick="dsrRequestRefresh()">↻ Refresh</button><button type="button" onclick="navigate('settings')">ตั้งค่า</button></div>
     </div>
   </aside>
   <main id="main-content" class="flex-1 overflow-auto h-full w-full"></main>
@@ -4023,7 +4021,7 @@ function clearCompanyAsset(key, previewId) {
 function renderSettings(el) {
   const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
   el.innerHTML = '<div class="p-6 fade-in"><h1 class="text-2xl font-bold text-white mb-1">ตั้งค่าระบบ</h1><p class="text-slate-400 text-sm mb-6">จัดการข้อมูลบริษัทและรูปเอกสาร</p>' +
-    '<div class="max-w-3xl"><form id="settings-form" onsubmit="saveSettings(event)" class="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">' +
+    '<div class="max-w-3xl"><div id="dsr-cloud-settings" class="bg-slate-900 border border-slate-800 rounded-xl p-6 mb-6"></div><form id="settings-form" onsubmit="saveSettings(event)" class="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">' +
     '<h2 class="text-lg font-semibold text-white">ข้อมูลบริษัท</h2>' +
     '<div><label class="text-sm text-slate-400 block mb-2">ชื่อบริษัท</label><input id="set-company-name" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none" value="' + esc(cfg.company_name||defaultConfig.company_name) + '"></div>' +
     '<div><label class="text-sm text-slate-400 block mb-2">เลขผู้เสียภาษี</label><input id="set-company-tax" type="text" class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm mono focus:border-orange-500 focus:outline-none" value="' + esc(cfg.company_tax_id||defaultConfig.company_tax_id) + '" maxlength="13"></div>' +
@@ -4054,6 +4052,7 @@ function renderSettings(el) {
     '<div class="pt-4 border-t border-slate-700 flex gap-3 justify-end"><button type="button" class="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm" onclick="navigate(\'dashboard\')">ยกเลิก</button><button type="submit" class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm flex items-center gap-2" id="set-submit"><i data-lucide="save" class="w-4 h-4"></i> บันทึก</button></div>' +
     '</form></div></div>';
   if (window.lucide) lucide.createIcons();
+  dsrRenderCloudSettings();
   dsrUpdateJsonFileInfo();
 }
 
@@ -4830,11 +4829,12 @@ function dsrShowSyncStatus(state) {
   var unsavedCount = window.dataSdk && window.dataSdk.draftCount ? window.dataSdk.draftCount() : 0;
   var saveAll = document.getElementById('dsr-save-all');
   if (saveAll && !saveAll.disabled) saveAll.textContent = unsavedCount ? 'บันทึกทั้งหมด (' + unsavedCount + ')' : 'บันทึกทั้งหมด';
-  label.textContent = unsavedCount || draftSaving || _dsrManualPending.size || _dsrMemoryFormDrafts.size || _dsrDirty
+  label.textContent = state.conflict ? 'ข้อมูลชนกัน · เปิดตั้งค่าเพื่อสำรองฉบับร่าง' : unsavedCount || draftSaving || _dsrManualPending.size || _dsrMemoryFormDrafts.size || _dsrDirty
     ? 'มีการแก้ไข · กรุณากดบันทึกทั้งหมด'
     : state.failed || state.error ? (state.cloud ? state.error : 'บันทึกในเครื่องไม่สำเร็จ กรุณาสำรองข้อมูลและลองอีกครั้ง')
     : state.jsonSaving ? 'กำลังเขียนไฟล์ JSON…' : state.jsonError ? 'บันทึกแล้ว · JSON ยังไม่สำเร็จ' : state.pending ? 'กำลังบันทึก…' : state.reading ? 'กำลังโหลด…' : state.cloud ? (state.ready ? 'ข้อมูลกลาง · เวอร์ชัน ' + state.version : 'กรุณาเข้าสู่ระบบ') : state.jsonFileName ? 'ไฟล์ JSON: ' + state.jsonFileName : 'บันทึกในเบราว์เซอร์นี้';
   label.style.color = state.failed || state.error || state.jsonError ? '#fbbf24' : '#94a3b8';
+  label.title = state.error || label.textContent;
   if (refresh) refresh.disabled = !!(state.pending || state.reading || state.jsonSaving);
   if (dot) dot.style.display = draftSaving || state.pending || state.reading || state.jsonSaving ? 'block' : 'none';
 }
