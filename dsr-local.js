@@ -72,6 +72,11 @@
     var folderName = '';
     var directoryHandleCache = null;
     var deviceConfigCache = {};
+    var deviceConfigVersion = 0;
+    var jsonHandle = null;
+    var jsonSaving = false;
+    var jsonLastSavedAt = '';
+    var jsonError = '';
     try { folderName = root.localStorage.getItem('DSR_storage_folder_name') || ''; } catch (ignore) {}
     var folderPermission = folderName ? 'prompt' : 'missing';
 
@@ -86,7 +91,9 @@
           configured: true, error: !!lastError, uncertain: false, offline: true,
           folderSaving: folderWriteActive || folderSaveScheduled, folderConfigured: !!folderName,
           folderName: folderName, folderPermission: folderPermission,
-          folderError: !!folderLastError });
+          folderError: !!folderLastError,
+          jsonSaving: jsonSaving, jsonFileName: jsonHandle ? jsonHandle.name : '',
+          jsonLastSavedAt: jsonLastSavedAt, jsonError: jsonError });
       }
     }
 
@@ -120,6 +127,7 @@
       var stored = await getMeta('deviceConfig');
       if (stored && stored.value && typeof stored.value === 'object') {
         deviceConfigCache = clone(stored.value);
+        deviceConfigVersion++;
         return deviceConfigCache;
       }
 
@@ -131,6 +139,7 @@
         if (legacy[key]) return;
         try { legacy[key] = root.localStorage.getItem('DSR_' + key) || ''; } catch (ignore) {}
       });
+      deviceConfigVersion++;
       deviceConfigCache = legacy && typeof legacy === 'object' ? clone(legacy) : {};
       if (Object.keys(deviceConfigCache).length) await setMeta('deviceConfig', deviceConfigCache);
       return deviceConfigCache;
@@ -140,6 +149,7 @@
       try {
         deviceConfigCache = clone(config && typeof config === 'object' ? config : {});
         await setMeta('deviceConfig', deviceConfigCache);
+        deviceConfigVersion++;
         scheduleLiveFolderSave();
         return { isOk: true, config: clone(deviceConfigCache) };
       } catch (error) {
@@ -356,6 +366,102 @@
         records: records,
         config: config
       };
+    }
+
+    async function getJsonHandle() {
+      if (!jsonHandle) {
+        var stored = await getMeta('manualJsonFile');
+        jsonHandle = stored && stored.value ? stored.value : null;
+        if (!jsonLastSavedAt) {
+          var saved = await getMeta('manualJsonSavedAt');
+          jsonLastSavedAt = saved && saved.value || '';
+        }
+      }
+      return jsonHandle;
+    }
+
+    async function jsonFileStatus() {
+      var handle = await getJsonHandle();
+      var permission = handle ? await directoryPermission(handle, false) : 'missing';
+      return { configured: !!handle, supported: typeof root.showSaveFilePicker === 'function',
+        fileName: handle ? handle.name : '', permission: permission,
+        savedAt: jsonLastSavedAt, saving: jsonSaving, error: jsonError };
+    }
+
+    async function setJsonBinding(handle) {
+      var database = await db();
+      var tx = database.transaction(META_STORE_NAME, 'readwrite');
+      var done = transactionDone(tx);
+      try {
+        var store = tx.objectStore(META_STORE_NAME);
+        if (handle) store.put({ key: 'manualJsonFile', value: handle });
+        else store.delete('manualJsonFile');
+        store.delete('manualJsonSavedAt');
+      } catch (error) {
+        tx.abort(); await done.catch(function() {}); throw error;
+      }
+      await done;
+    }
+
+    async function chooseJsonFile() {
+      if (jsonSaving) return { isOk: false, busy: true, error: 'กรุณารอให้เขียน JSON เสร็จก่อนเปลี่ยนไฟล์' };
+      if (typeof root.showSaveFilePicker !== 'function') return { isOk: false, unsupported: true,
+        error: 'เบราว์เซอร์นี้ยังเลือกไฟล์บันทึกตรงไม่ได้ ใช้ดาวน์โหลด Backup แทนได้' };
+      try {
+        // Invoke the picker from the user's click before any asynchronous DB work.
+        var handle = await root.showSaveFilePicker({ id: 'dsr-json-data', suggestedName: LIVE_FILE_NAME,
+          startIn: 'documents', types: [{ description: 'DSR JSON', accept: { 'application/json': ['.json'] } }] });
+        await setJsonBinding(handle);
+        jsonHandle = handle;
+        jsonLastSavedAt = '';
+        jsonError = '';
+        emitStatus();
+        return { isOk: true, fileName: handle.name };
+      } catch (error) {
+        if (error && error.name === 'AbortError') return { isOk: false, cancelled: true };
+        return { isOk: false, error: error.message || 'เลือกไฟล์ไม่สำเร็จ' };
+      }
+    }
+
+    async function saveJsonFile() {
+      if (jsonSaving) return { isOk: false, busy: true, error: 'กำลังเขียนไฟล์ JSON' };
+      var handle = await getJsonHandle();
+      if (!handle) return { isOk: false, notConfigured: true };
+      if (jsonSaving) return { isOk: false, busy: true, error: 'กำลังเขียนไฟล์ JSON' };
+      jsonSaving = true;
+      jsonError = '';
+      emitStatus();
+      var writable = null;
+      try {
+        if (await directoryPermission(handle, false) !== 'granted') throw new Error('กรุณาเลือกหรืออนุญาตไฟล์ JSON อีกครั้งในหน้าตั้งค่า');
+        var backup = await exportBackup();
+        writable = await handle.createWritable();
+        await writable.write(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' }));
+        await writable.close();
+        writable = null;
+        jsonLastSavedAt = new Date().toISOString();
+        // A timestamp cache must not report a completed disk write as a failure.
+        try { await setMeta('manualJsonSavedAt', jsonLastSavedAt); } catch (ignore) {}
+        return { isOk: true, fileName: handle.name, count: backup.records.length, savedAt: jsonLastSavedAt };
+      } catch (error) {
+        if (writable) { try { await writable.abort(); } catch (ignore) {} }
+        jsonError = error.message || 'เขียนไฟล์ JSON ไม่สำเร็จ';
+        return { isOk: false, error: jsonError };
+      } finally {
+        jsonSaving = false;
+        emitStatus();
+      }
+    }
+
+    async function disconnectJsonFile() {
+      if (jsonSaving) return { isOk: false, error: 'กรุณารอให้เขียนไฟล์เสร็จก่อน' };
+      try { await setJsonBinding(null); }
+      catch (error) { return { isOk: false, error: error.message || 'ยกเลิกการผูกไฟล์ไม่สำเร็จ' }; }
+      jsonHandle = null;
+      jsonLastSavedAt = '';
+      jsonError = '';
+      emitStatus();
+      return { isOk: true };
     }
 
     async function getDirectoryHandle() {
@@ -597,6 +703,7 @@
       await done;
       if (config) {
         deviceConfigCache = clone(config);
+        deviceConfigVersion++;
         var compactConfig = clone(config);
         ['company_logo_data','company_signature_data','company_stamp_data','company_payment_qr_data'].forEach(function (key) { delete compactConfig[key]; });
         try { root.localStorage.setItem('DSR_config', JSON.stringify(compactConfig)); } catch (ignore) {}
@@ -718,6 +825,7 @@
           var records = await getAll();
           if (!records.length) records = await migrateLegacyCache();
           await loadDeviceConfig();
+          await getJsonHandle();
           setMemory(records);
           handler.onDataChanged(clone(records));
           var folderInfo = await storageFolderInfo();
@@ -743,7 +851,7 @@
       refresh: refresh,
       getUrl: function () { return folderName ? 'local-folder://' + folderName + '/' + LIVE_FILE_NAME : 'local://indexeddb'; },
       setUrl: function () { return Promise.resolve({ isOk: true, offline: true }); },
-      isBusy: function () { return pending > 0 || reading || folderWriteActive || folderSaveScheduled; },
+      isBusy: function () { return pending > 0 || reading || folderWriteActive || folderSaveScheduled || jsonSaving; },
       retryUpdates: function () { return Promise.resolve([]); },
       commitOperations: commitOperations,
       reserveDocumentNumber: reserveDocumentNumber,
@@ -760,6 +868,11 @@
       saveLiveToFolder: function () { return saveLiveToFolder(true); },
       saveDeviceConfig: saveDeviceConfig,
       getDeviceConfig: getDeviceConfig,
+      getDeviceConfigVersion: function () { return deviceConfigVersion; },
+      jsonFileStatus: jsonFileStatus,
+      chooseJsonFile: chooseJsonFile,
+      saveJsonFile: saveJsonFile,
+      disconnectJsonFile: disconnectJsonFile,
       replaceFromSync: replaceFromSync,
       remapBackendId: remapBackendId
     };

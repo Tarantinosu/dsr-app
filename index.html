@@ -9,7 +9,7 @@
   <link rel="stylesheet" href="assets/tailwind.css">
   <script src="assets/lucide.min.js"></script>
   <script src="assets/xlsx.full.min.js"></script>
-  <script src="dsr-local.js?v=20261024-audit-fixes"></script>
+  <script src="dsr-local.js?v=20261024-json-file"></script>
   <script src="dsr-manual.js?v=20261024-audit-fixes"></script>
   <script>
 // ===== OFFLINE SDK — data stays on this computer =====
@@ -337,10 +337,12 @@ function dsrLocalDate(value) {
 
 function roundHU(n) { return Math.round((n + Number.EPSILON) * 100) / 100; }
 function roundPct(n) { return Math.round(((Number(n) || 0) + Number.EPSILON) * 1000000) / 1000000; }
-function fmt(n) { return roundHU(n).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+const dsrNumberFormatter = new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const dsrDateFormatter = new Intl.DateTimeFormat('th-TH', { year:'numeric', month:'short', day:'numeric' });
+function fmt(n) { return dsrNumberFormatter.format(roundHU(n)); }
 function fmtDate(iso) {
   if (!iso) return '-';
-  try { return new Date(iso).toLocaleDateString('th-TH', { year:'numeric', month:'short', day:'numeric' }); }
+  try { return dsrDateFormatter.format(new Date(iso)); }
   catch { return iso; }
 }
 function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
@@ -552,7 +554,7 @@ function renderPage() {
     console.error('[DSR+ renderPage error]', err);
     if (main) main.innerHTML = '<div class="p-6"><div class="bg-red-900/40 border border-red-700 rounded-xl p-4 text-red-300 text-sm"><b>⚠ เกิดข้อผิดพลาด:</b><pre class="mt-2 text-xs overflow-auto whitespace-pre-wrap">' + (err && err.stack ? err.stack : String(err)) + '</pre></div></div>';
   }
-  if (window.lucide) lucide.createIcons();
+  if (window.lucide && document.querySelector('i[data-lucide]')) lucide.createIcons();
   setTimeout(function () { dsrRestoreFormDrafts(); }, 0);
 }
 
@@ -3203,7 +3205,7 @@ function renderDocuments(el) {
   const selectedDay    = window.docDayFilter    || '';
   const selectedType   = window.docTypeFilter   || '';
   const searchQuery    = window.docSearchQuery  || '';
-  const groupMode      = window.docGroupMode || localStorage.getItem('DSR_doc_group_mode') || 'date';
+  const groupMode      = (window.docGroupMode || localStorage.getItem('DSR_doc_group_mode')) === 'project' ? 'project' : 'date';
   window.docGroupMode = groupMode;
   const clients = Array.from(new Set(projects.map(function(p){ return p.client_name||''; }).filter(Boolean))).sort();
 
@@ -3266,7 +3268,7 @@ function renderDocuments(el) {
   const clientReceiptDocs  = allFilteredDocs.filter(function(d){ return d.type==='REC'; });
   const extDocs            = allFilteredDocs.filter(function(d){ return d.type==='EXT'; });
 
-  const projectGroupsHtml = filteredGroups.map(function(group) {
+  const projectGroupsHtml = groupMode === 'project' ? filteredGroups.map(function(group) {
     const p = group.project;
     const docs = group.docs;
     const projectSearch = ((p.project_name||'')+' '+(p.client_name||'')).toLowerCase();
@@ -3283,7 +3285,7 @@ function renderDocuments(el) {
       (docs.length===0 ? '<p class="text-xs text-slate-500 py-2">ยังไม่มีเอกสาร</p>' :
         '<div class="space-y-1">' + docs.map(function(d) { return renderDocumentRowHtml(d, p, false); }).join('') + '</div>') +
       '</div>';
-  }).join('');
+  }).join('') : '';
 
   const flatDocuments = [];
   filteredGroups.forEach(function(group) {
@@ -3304,7 +3306,7 @@ function renderDocuments(el) {
     }
     group.items.push(entry);
   });
-  const dateGroupsHtml = dateGroups.map(function(group) {
+  const dateGroupsHtml = groupMode === 'date' ? dateGroups.map(function(group) {
     const label = group.key === 'no-date' ? 'ไม่ระบุวันที่' : fmtDate(group.date);
     return '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4" data-doc-group data-doc-total="'+group.items.length+'" data-project-search="">' +
       '<div class="flex items-center justify-between gap-3 mb-3">' +
@@ -3312,7 +3314,7 @@ function renderDocuments(el) {
         '<div><div class="text-sm font-semibold text-white">'+esc(label)+'</div><div class="text-[11px] text-slate-500">เรียงเอกสารล่าสุดก่อน</div></div></div>' +
         '<span class="text-xs text-slate-500" data-doc-group-count>'+group.items.length+' เอกสาร</span>' +
       '</div><div class="space-y-1">' + group.items.map(function(entry) { return renderDocumentRowHtml(entry.doc, entry.project, true); }).join('') + '</div></div>';
-  }).join('');
+  }).join('') : '';
   const documentsListHtml = groupMode === 'project' ? projectGroupsHtml : dateGroupsHtml;
 
   el.innerHTML = '<div class="p-4 md:p-6 fade-in"><div class="flex items-center justify-between mb-1"><h1 class="text-2xl font-bold text-white">เอกสาร & พิมพ์</h1></div><p class="text-slate-400 text-sm mb-4">ค้นหาจากชื่อโปรเจกต์ ลูกค้า หรือเลขเอกสาร และเลือกประเภทที่ต้องการ</p>' +
@@ -4003,6 +4005,11 @@ function renderSettings(el) {
       assetUploadBlock('company_stamp_data','set-company-stamp','preview-company-stamp','ตราปั๊ม') +
       assetUploadBlock('company_payment_qr_data','set-company-payment-qr','preview-company-payment-qr','Payment QR Code') +
     '</div><p class="text-xs text-slate-500 mt-3">รูปจะไปแสดงบน Quotation, Invoice/Billing Note และ Receipt | Tax invoice และ QR payment จะขึ้นในเอกสารตรงตำแหน่งชำระเงิน</p></div>' +
+    '<div class="pt-5 border-t border-slate-700"><h3 class="text-sm font-semibold text-white mb-3">ไฟล์ข้อมูล JSON</h3>' +
+    '<p class="text-xs text-slate-400 mb-3">เลือกไฟล์ในโฟลเดอร์ที่ต้องการครั้งเดียว เช่น Documents\\DSR จากนั้นปุ่มบันทึกทั้งหมดจะเขียน JSON ลงไฟล์นี้ด้วย ไม่เขียนไฟล์ระหว่างพิมพ์</p>' +
+    '<div id="dsr-json-file-info" class="text-xs text-slate-300 mb-3" role="status">กำลังตรวจสอบไฟล์…</div>' +
+    '<div class="flex flex-wrap gap-2"><button type="button" class="px-3 py-2 bg-sky-700 text-white rounded-lg text-xs" onclick="dsrChooseJsonFile()">เลือก / เปลี่ยนไฟล์ JSON</button><button type="button" id="dsr-json-disconnect" hidden class="px-3 py-2 bg-slate-700 text-white rounded-lg text-xs" onclick="dsrDisconnectJsonFile()">ยกเลิกการผูกไฟล์</button></div>' +
+    '<p class="text-xs text-slate-500 mt-2">ถ้าเลือกไฟล์เดิม การกดบันทึกจะแทนที่เนื้อหาไฟล์นั้น ข้อมูลในเบราว์เซอร์ยังเป็นสำเนากันพลาด และไม่ซิงก์ข้ามเครื่อง</p></div>' +
     '<div class="pt-5 border-t border-slate-700"><h3 class="text-sm font-semibold text-white mb-3">สำรองและกู้คืนข้อมูล</h3>' +
     '<p class="text-xs text-slate-400 mb-3">ข้อมูลบันทึกในเบราว์เซอร์นี้ ไม่ส่งขึ้นคลาวด์ ไม่ซิงก์ข้ามเครื่อง กรุณาดาวน์โหลด Backup เก็บไว้สม่ำเสมอ</p>' +
     '<div class="grid sm:grid-cols-2 gap-2">' +
@@ -4012,6 +4019,34 @@ function renderSettings(el) {
     '<div class="pt-4 border-t border-slate-700 flex gap-3 justify-end"><button type="button" class="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm" onclick="navigate(\'dashboard\')">ยกเลิก</button><button type="submit" class="px-4 py-2 bg-orange-600 text-white rounded-lg text-sm flex items-center gap-2" id="set-submit"><i data-lucide="save" class="w-4 h-4"></i> บันทึก</button></div>' +
     '</form></div></div>';
   if (window.lucide) lucide.createIcons();
+  dsrUpdateJsonFileInfo();
+}
+
+async function dsrUpdateJsonFileInfo() {
+  var el = document.getElementById('dsr-json-file-info');
+  if (!el) return;
+  try {
+    var state = await window.dataSdk.jsonFileStatus();
+    if (!el.isConnected) return;
+    if (!state.supported) el.textContent = 'เบราว์เซอร์นี้ยังเขียนไฟล์ตรงไม่ได้ ใช้ดาวน์โหลด Backup ด้านล่าง หรือเปิดด้วย Chrome / Edge บนคอม';
+    else if (!state.configured) el.textContent = 'ยังไม่ได้เลือกไฟล์ · ข้อมูลยังบันทึกในเบราว์เซอร์';
+    else el.textContent = state.fileName + (state.permission === 'granted' ? '' : ' · ต้องอนุญาตไฟล์อีกครั้ง') + (state.savedAt ? ' · บันทึกล่าสุด ' + new Date(state.savedAt).toLocaleString('th-TH') : ' · ยังไม่ได้เขียนไฟล์ กดบันทึกทั้งหมดเพื่อเขียน') + (state.error ? ' · ' + state.error : '');
+    var disconnect = document.getElementById('dsr-json-disconnect');
+    if (disconnect) disconnect.hidden = !state.configured;
+  } catch (error) { if (el.isConnected) el.textContent = 'ตรวจไฟล์ไม่ได้ · ' + error.message; }
+}
+
+async function dsrChooseJsonFile() {
+  var result = await window.dataSdk.chooseJsonFile();
+  if (result.cancelled) return;
+  showToast(result.isOk ? 'เลือกไฟล์แล้ว · กดบันทึกทั้งหมดเพื่อเขียน JSON' : result.error, result.isOk ? 'success' : 'error');
+  dsrUpdateJsonFileInfo();
+}
+
+async function dsrDisconnectJsonFile() {
+  var result = await window.dataSdk.disconnectJsonFile();
+  showToast(result.isOk ? 'ยกเลิกการผูกไฟล์แล้ว · ไฟล์เดิมและข้อมูลยังอยู่' : result.error, result.isOk ? 'success' : 'error');
+  dsrUpdateJsonFileInfo();
 }
 
 async function dsrDownloadBackup() {
@@ -4763,10 +4798,10 @@ function dsrShowSyncStatus(state) {
   label.textContent = unsavedCount || draftSaving || _dsrManualPending.size || _dsrMemoryFormDrafts.size || _dsrDirty
     ? 'มีการแก้ไข · กรุณากดบันทึกทั้งหมด'
     : state.failed || state.error ? 'บันทึกในเครื่องไม่สำเร็จ กรุณาสำรองข้อมูลและลองอีกครั้ง'
-    : state.pending ? 'กำลังบันทึก…' : state.reading ? 'กำลังโหลด…' : 'บันทึกในเบราว์เซอร์นี้';
-  label.style.color = state.failed || state.error ? '#fbbf24' : '#94a3b8';
-  if (refresh) refresh.disabled = !!(state.pending || state.reading);
-  if (dot) dot.style.display = draftSaving || state.pending || state.reading ? 'block' : 'none';
+    : state.jsonSaving ? 'กำลังเขียนไฟล์ JSON…' : state.jsonError ? 'บันทึกในเบราว์เซอร์แล้ว · JSON ยังไม่สำเร็จ' : state.pending ? 'กำลังบันทึก…' : state.reading ? 'กำลังโหลด…' : state.jsonFileName ? 'ไฟล์ JSON: ' + state.jsonFileName : 'บันทึกในเบราว์เซอร์นี้';
+  label.style.color = state.failed || state.error || state.jsonError ? '#fbbf24' : '#94a3b8';
+  if (refresh) refresh.disabled = !!(state.pending || state.reading || state.jsonSaving);
+  if (dot) dot.style.display = draftSaving || state.pending || state.reading || state.jsonSaving ? 'block' : 'none';
 }
 async function dsrDoRefresh() {
   var wasDirty = _dsrDirty;
@@ -4806,9 +4841,11 @@ window.openDSRPrintOverlay = openDSRPrintOverlay;
   const result = await window.dataSdk.init({
     onDataChanged: function(data) {
       allData = data;
-      var deviceConfig = window.dataSdk && window.dataSdk.getDeviceConfig ? window.dataSdk.getDeviceConfig() : {};
-      if (deviceConfig && Object.keys(deviceConfig).length && window.elementSdk) {
-        Object.assign(window.elementSdk.config, deviceConfig);
+      var configVersion = window.dataSdk.getDeviceConfigVersion();
+      if (window._dsrDeviceConfigVersion !== configVersion) {
+        var deviceConfig = window.dataSdk.getDeviceConfig();
+        if (deviceConfig && Object.keys(deviceConfig).length && window.elementSdk) Object.assign(window.elementSdk.config, deviceConfig);
+        window._dsrDeviceConfigVersion = configVersion;
       }
       // Restore legacy company settings only if no device settings exist.
       var cfgRecord = data.find(function(r){ return r.record_type === 'config'; });
@@ -6381,6 +6418,15 @@ async function dsrPrepareDraftsForSave() {
 async function dsrSaveAll(appliedForm) {
   var button = document.getElementById('dsr-save-all');
   if (!button || button.disabled) return;
+  if (!appliedForm && currentPage === 'settings') {
+    var settingsForm = document.getElementById('settings-form');
+    var settingsSubmit = document.getElementById('set-submit');
+    if (settingsForm && settingsSubmit && !settingsSubmit.disabled) {
+      if (settingsForm.requestSubmit) settingsForm.requestSubmit();
+      else settingsSubmit.click();
+    }
+    return;
+  }
   if (!appliedForm && Array.from(document.querySelectorAll('#main-content form')).some(function(form){ return form.getClientRects().length > 0 && !form.dataset.dsrLiveSave; })) {
     showToast('กดเพิ่มหรือบันทึกในฟอร์มที่เปิดอยู่ก่อน แล้วกดบันทึกทั้งหมด', 'error'); return;
   }
@@ -6394,7 +6440,17 @@ async function dsrSaveAll(appliedForm) {
       _dsrManualPending.clear(); _dsrDirty = false;
       Object.values(_qt).forEach(function(st){st.dirty = false;});
     }
-    showToast('บันทึกข้อมูลในเบราว์เซอร์แล้ว');
+    try {
+      var jsonStatus = await window.dataSdk.jsonFileStatus();
+      if (jsonStatus.configured) {
+        var fileResult = await window.dataSdk.saveJsonFile();
+        if (!fileResult.isOk) showToast('บันทึกในเบราว์เซอร์แล้ว แต่เขียน JSON ไม่สำเร็จ · ' + (fileResult.error || 'กรุณาตรวจสอบไฟล์'), 'error');
+        else showToast('บันทึกแล้ว · ' + fileResult.fileName);
+        dsrUpdateJsonFileInfo();
+      } else showToast('บันทึกในเบราว์เซอร์แล้ว · เลือกไฟล์ JSON ได้ในหน้าตั้งค่า');
+    } catch(fileError) {
+      showToast('บันทึกในเบราว์เซอร์แล้ว แต่ตรวจหรือเขียน JSON ไม่สำเร็จ · ' + fileError.message, 'error');
+    }
   } catch(error) { showToast(error.message || 'บันทึกไม่สำเร็จ · ฉบับร่างยังอยู่', 'error'); }
   finally { button.disabled = false; dsrShowSyncStatus(_dsrLastSyncState || {}); }
 }
