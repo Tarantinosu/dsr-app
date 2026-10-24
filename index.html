@@ -4,20 +4,24 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#0f172a">
-  <title>DSR+ Web 2026.10.24 Local | DOPIOUS SHARE REVENUE</title>
+  <title>DSR+ Web 2026.10.24 Shared | DOPIOUS SHARE REVENUE</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="assets/tailwind.css">
   <script src="assets/lucide.min.js"></script>
   <script src="assets/xlsx.full.min.js"></script>
   <script src="dsr-local.js?v=20261024-json-file"></script>
   <script src="dsr-manual.js?v=20261024-audit-fixes"></script>
+  <script src="assets/supabase-2.118.0.js"></script>
+  <script src="cloud-config.js?v=20261024-cloud"></script>
+  <script src="dsr-cloud.js?v=20261024-cloud"></script>
+  <script src="dsr-cloud-ui.js?v=20261024-cloud"></script>
   <script>
 // ===== OFFLINE SDK — data stays on this computer =====
 (function () {
 
   // ── Config (local per-browser, e.g. company settings) ────────────────
   var _cfg = {};
-  try { var _cs = localStorage.getItem('DSR_config'); if (_cs) _cfg = JSON.parse(_cs); } catch (e) {}
+  try { var _cs = !window.dsrCloudMode && localStorage.getItem('DSR_config'); if (_cs) _cfg = JSON.parse(_cs); } catch (e) {}
 
   if (!window.elementSdk) {
     window.elementSdk = {
@@ -37,12 +41,12 @@
             throw new Error((localConfigResult && localConfigResult.error) || 'บันทึกการตั้งค่าในเครื่องไม่สำเร็จ');
           }
         }
-        ['company_signature_data','company_logo_data','company_stamp_data','company_payment_qr_data'].forEach(function(k){
+        if (!window.dsrCloudMode) ['company_signature_data','company_logo_data','company_stamp_data','company_payment_qr_data'].forEach(function(k){
           try { localStorage.removeItem('DSR_' + k); } catch (ignore) {}
         });
         var compactCfg = Object.assign({}, _cfg);
         ['company_signature_data','company_logo_data','company_stamp_data','company_payment_qr_data'].forEach(function(k){ delete compactCfg[k]; });
-        try { localStorage.setItem('DSR_config', JSON.stringify(compactCfg)); } catch (e) {}
+        if (!window.dsrCloudMode) try { localStorage.setItem('DSR_config', JSON.stringify(compactCfg)); } catch (e) {}
         // Save settings to the local database. Images remain in local device storage.
         if (window.dataSdk) {
           var LOCAL_ONLY_KEYS = ['company_signature_data','company_logo_data','company_stamp_data','company_payment_qr_data','company_prepare_name','company_prepare_title'];
@@ -67,14 +71,26 @@
 
   // Edits are staged until Save All writes to the existing browser database.
   if (!window.dataSdk) {
-    window.dataSdk = createDSRManual(createDSRLocal, {
+    var storageFactory = createDSRLocal;
+    if (window.dsrCloudMode) {
+      var connection = window.DSR_CLOUD_CONFIG;
+      var cloudClient = supabase.createClient(connection.url, connection.publishableKey, {
+        auth: { persistSession: false, autoRefreshToken: true, detectSessionInUrl: false },
+        global: { fetch: function(input, init) {
+          return window.fetch(input, Object.assign({}, init, {signal: AbortSignal.timeout(30000)}));
+        } }
+      });
+      var fileTools = createDSRLocal({mirrorFolder:false});
+      storageFactory = function(opts){return createDSRSupabase(Object.assign({},opts,{client:cloudClient,fileTools:fileTools}));};
+    }
+    window.dataSdk = createDSRManual(storageFactory, {
       mirrorFolder: false,
       fetch: window.fetch.bind(window),
       storage: window.localStorage,
       getRecords: function () { return allData; },
       setRecords: function (records) { allData = records; },
       hasPendingDraft: function () { return dsrHasPendingDraft(); },
-      onStatus: function (state) { dsrShowSyncStatus(state); },
+      onStatus: function (state) { dsrShowSyncStatus(state); if(state.cloud)dsrShowCloudState(state); },
       onSaved: function (action, record) {
         window._dsrSavedVersion = (window._dsrSavedVersion || 0) + 1;
         if (action === 'delete' || (action === 'update' && record.record_type !== 'quotation' && record.record_type !== 'config')) dsrRenderActionWhenIdle();
@@ -92,6 +108,15 @@
 })();
   </script>
   <style>
+#dsr-cloud-dialog{background:#0f172a;color:#f8fafc;border:1px solid #475569;border-radius:12px;width:calc(100% - 32px);max-width:480px;max-height:90dvh;padding:0}
+#dsr-cloud-dialog::backdrop{background:rgba(0,0,0,.85)}
+.dsr-cloud-sheet{padding:24px}.dsr-cloud-sheet h1{font-size:22px;font-weight:700;margin-bottom:12px}.dsr-cloud-sheet h2{font-size:18px;font-weight:600;margin-top:20px}
+.dsr-cloud-sheet p{font-size:14px;line-height:1.6;margin:12px 0;color:#cbd5e1}.dsr-cloud-sheet label{display:block;font-size:14px;margin:16px 0 8px}
+.dsr-cloud-sheet input{display:block;box-sizing:border-box;width:100%;min-height:44px;background:#1e293b;border:1px solid #64748b;border-radius:6px;padding:10px;color:#fff}
+.dsr-cloud-sheet button,.dsr-cloud-button{background:#ea580c;color:#fff;border-radius:6px;padding:10px 12px;min-height:44px;margin-top:12px;width:100%;font-size:14px;font-weight:600}
+.dsr-cloud-sheet button.dsr-cloud-secondary{background:#334155}.dsr-cloud-sheet button:disabled{opacity:.5;cursor:wait}
+.dsr-cloud-sheet :focus-visible,.dsr-cloud-button:focus-visible{outline:3px solid #fdba74;outline-offset:3px}
+#dsr-cloud-message{color:#fbbf24}.dsr-cloud-sheet p.dsr-cloud-note{font-size:12px}
 html,body{height:100%;margin:0}
 *{font-family:'Leelawadee UI','Tahoma','Arial',sans-serif}
 .mono{font-family:'Consolas','Courier New',monospace}
@@ -289,6 +314,11 @@ html,body{height:100%;margin:0}
       <button class="nav-item whitespace-nowrap md:whitespace-normal flex items-center gap-3 flex-shrink-0 md:flex-shrink" data-page="settings" onclick="navigate('settings')"><i data-lucide="settings" class="w-4 h-4 flex-shrink-0"></i><span class="hidden md:inline">ตั้งค่า</span></button>
     </nav>
     <div class="no-print" style="padding:12px;border-top:1px solid #292929;font-size:12px">
+      <div id="dsr-cloud-mode" role="status">ข้อมูลแยกในเบราว์เซอร์นี้</div>
+      <button type="button" id="dsr-cloud-connect" class="dsr-cloud-button" onclick="dsrSwitchStorage('cloud')">ใช้ข้อมูลร่วมกัน · เข้าสู่ระบบ</button>
+      <div id="dsr-cloud-account" hidden><div id="dsr-cloud-email" style="overflow-wrap:anywhere;margin-top:8px"></div><button type="button" onclick="dsrCloudSignOut()" style="padding:8px">ออกจากระบบ</button><button type="button" onclick="dsrSwitchStorage('local')" style="padding:8px">ดูข้อมูลเดิมในเครื่อง</button></div>
+      <div id="dsr-cloud-conflict" hidden role="alert" style="color:#fbbf24;margin:12px 0">เครื่องอื่นบันทึกข้อมูลใหม่แล้ว ฉบับร่างของคุณยังอยู่<button type="button" class="dsr-cloud-button" onclick="dsrCloudReload()">โหลดข้อมูลล่าสุด · ทิ้งฉบับร่าง</button></div>
+      <button id="dsr-cloud-draft-download" hidden type="button" onclick="dsrCloudDownloadDraft()" style="padding:8px">ดาวน์โหลดฉบับร่างก่อนโหลดใหม่</button>
       <div id="dsr-save-status" role="status" aria-live="polite" style="margin-bottom:8px;color:#94a3b8">กำลังโหลดข้อมูล…</div>
       <button id="dsr-save-all" type="button" onclick="dsrSaveAll()" style="padding:8px 10px;margin-bottom:8px;background:#ea580c;color:white;border-radius:6px;width:100%">บันทึกทั้งหมด</button>
       <div style="font-size:11px;color:#94a3b8;margin-bottom:8px">เพิ่ม/แก้/ลบเป็นฉบับร่างจนกดบันทึก · ปิดหรือรีโหลดก่อนบันทึก ฉบับร่างจะหาย</div>
@@ -303,6 +333,7 @@ html,body{height:100%;margin:0}
 <script>
 // ===== GLOBALS =====
 let allData = [];
+function dsrGetCurrentRecords() { return allData; }
 let currentPage = 'dashboard';
 let _activeTab = 'qt';
 
@@ -350,8 +381,12 @@ function esc(v) { return String(v == null ? '' : v).replace(/[&<>\"]/g, function
 
 function getAssetValue(key) {
   const cfg = window.elementSdk ? window.elementSdk.config : defaultConfig;
-  if (cfg && cfg[key]) return cfg[key];
-  try { return localStorage.getItem('DSR_' + key) || ''; } catch (ignore) { return ''; }
+  let src = cfg && cfg[key];
+  if (!src && !window.dsrCloudMode) {
+    try { src = localStorage.getItem('DSR_' + key) || ''; } catch (ignore) {}
+  }
+  // These values are interpolated into image attributes throughout document views.
+  return typeof src === 'string' && /^(?:data:image\/(?:png|jpe?g|gif|webp|svg\+xml);base64,[a-z0-9+/=\r\n]+|https:\/\/[^\s"'<>`]+)$/i.test(src) ? src : '';
 }
 function assetImg(key, cls, alt) {
   const src = getAssetValue(key);
@@ -3979,7 +4014,7 @@ function assetUploadBlock(key, inputId, previewId, label) {
   '</div>';
 }
 function clearCompanyAsset(key, previewId) {
-  localStorage.removeItem('DSR_' + key);
+  if (!window.dsrCloudMode) localStorage.removeItem('DSR_' + key);
   const preview = document.getElementById(previewId);
   if (preview) preview.innerHTML = '<span class="text-xs text-slate-500">ยังไม่มีรูป</span>';
   if (window.elementSdk && window.elementSdk.config) window.elementSdk.config[key] = '';
@@ -4009,9 +4044,9 @@ function renderSettings(el) {
     '<p class="text-xs text-slate-400 mb-3">เลือกไฟล์ในโฟลเดอร์ที่ต้องการครั้งเดียว เช่น Documents\\DSR จากนั้นปุ่มบันทึกทั้งหมดจะเขียน JSON ลงไฟล์นี้ด้วย ไม่เขียนไฟล์ระหว่างพิมพ์</p>' +
     '<div id="dsr-json-file-info" class="text-xs text-slate-300 mb-3" role="status">กำลังตรวจสอบไฟล์…</div>' +
     '<div class="flex flex-wrap gap-2"><button type="button" class="px-3 py-2 bg-sky-700 text-white rounded-lg text-xs" onclick="dsrChooseJsonFile()">เลือก / เปลี่ยนไฟล์ JSON</button><button type="button" id="dsr-json-disconnect" hidden class="px-3 py-2 bg-slate-700 text-white rounded-lg text-xs" onclick="dsrDisconnectJsonFile()">ยกเลิกการผูกไฟล์</button></div>' +
-    '<p class="text-xs text-slate-500 mt-2">ถ้าเลือกไฟล์เดิม การกดบันทึกจะแทนที่เนื้อหาไฟล์นั้น ข้อมูลในเบราว์เซอร์ยังเป็นสำเนากันพลาด และไม่ซิงก์ข้ามเครื่อง</p></div>' +
+    '<p class="text-xs text-slate-500 mt-2">ถ้าเลือกไฟล์เดิม การกดบันทึกจะแทนที่เนื้อหาไฟล์นั้น ' + (window.dataSdk.isCloud ? 'ไฟล์นี้เป็นสำเนาสำรอง ข้อมูลหลักอยู่ในฐานกลาง' : 'ข้อมูลในเบราว์เซอร์ยังเป็นสำเนากันพลาด และไม่ซิงก์ข้ามเครื่อง') + '</p></div>' +
     '<div class="pt-5 border-t border-slate-700"><h3 class="text-sm font-semibold text-white mb-3">สำรองและกู้คืนข้อมูล</h3>' +
-    '<p class="text-xs text-slate-400 mb-3">ข้อมูลบันทึกในเบราว์เซอร์นี้ ไม่ส่งขึ้นคลาวด์ ไม่ซิงก์ข้ามเครื่อง กรุณาดาวน์โหลด Backup เก็บไว้สม่ำเสมอ</p>' +
+    '<p class="text-xs text-slate-400 mb-3">' + (window.dataSdk.isCloud ? 'ข้อมูลหลักอยู่ในฐานกลาง เครื่องอื่นต้องเข้าสู่ระบบและโหลดข้อมูลล่าสุด กรุณาดาวน์โหลด Backup เก็บไว้ด้วย การนำเข้าเปิดเฉพาะตอนฐานกลางว่าง' : 'ข้อมูลบันทึกในเบราว์เซอร์นี้ ไม่ส่งขึ้นคลาวด์ ไม่ซิงก์ข้ามเครื่อง กรุณาดาวน์โหลด Backup เก็บไว้สม่ำเสมอ') + '</p>' +
     '<div class="grid sm:grid-cols-2 gap-2">' +
       '<button type="button" onclick="dsrDownloadBackup()" class="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2"><i data-lucide="download" class="w-4 h-4"></i>ดาวน์โหลด Backup</button>' +
       '<label class="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"><i data-lucide="upload" class="w-4 h-4"></i>กู้คืนจากไฟล์<input type="file" accept=".json,application/json" class="hidden" onchange="dsrImportBackupFile(this)"></label>' +
@@ -4068,14 +4103,14 @@ function dsrImportBackupFile(input) {
   var file = input && input.files ? input.files[0] : null;
   if (!file) return;
   input.value = '';
-  showConfirm('กู้คืน Backup นี้?\n\nข้อมูลในเครื่องปัจจุบันจะถูกเขียนทับทั้งหมด ควรดาวน์โหลด Backup ชุดปัจจุบันเก็บไว้ก่อน', async function () {
+  showConfirm(window.dataSdk.isCloud ? 'นำเข้า Backup ไปฐานกลาง? อนุญาตเฉพาะฐานกลางที่ยังว่าง ข้อมูลเดิมในเครื่องจะยังอยู่' : 'กู้คืน Backup นี้?\n\nข้อมูลในเครื่องปัจจุบันจะถูกเขียนทับทั้งหมด ควรดาวน์โหลด Backup ชุดปัจจุบันเก็บไว้ก่อน', async function () {
     var result = await window.dataSdk.importBackup(file);
     if (!result || !result.isOk) {
       showToast((result && result.error) || 'กู้คืน Backup ไม่สำเร็จ', 'error');
       return;
     }
     showToast('กู้คืนสำเร็จ · ' + result.count + ' รายการ');
-    setTimeout(function () { location.reload(); }, 500);
+    if(window.dataSdk.isCloud)renderPage();else setTimeout(function () { location.reload(); }, 500);
   });
 }
 
@@ -4760,7 +4795,7 @@ function dsrMarkEdited(event) {
 document.addEventListener('input', dsrMarkEdited, true);
 document.addEventListener('change', dsrMarkEdited, true);
 window.addEventListener('beforeunload', function (event) {
-  if (dsrHasPendingDraft() || window.dataSdk.isBusy()) {
+  if (dsrHasPendingDraft() || window.dataSdk.isBusy() || (window.dataSdk.hasUnresolvedSave && window.dataSdk.hasUnresolvedSave())) {
     event.preventDefault();
     event.returnValue = '';
   }
@@ -4797,8 +4832,8 @@ function dsrShowSyncStatus(state) {
   if (saveAll && !saveAll.disabled) saveAll.textContent = unsavedCount ? 'บันทึกทั้งหมด (' + unsavedCount + ')' : 'บันทึกทั้งหมด';
   label.textContent = unsavedCount || draftSaving || _dsrManualPending.size || _dsrMemoryFormDrafts.size || _dsrDirty
     ? 'มีการแก้ไข · กรุณากดบันทึกทั้งหมด'
-    : state.failed || state.error ? 'บันทึกในเครื่องไม่สำเร็จ กรุณาสำรองข้อมูลและลองอีกครั้ง'
-    : state.jsonSaving ? 'กำลังเขียนไฟล์ JSON…' : state.jsonError ? 'บันทึกในเบราว์เซอร์แล้ว · JSON ยังไม่สำเร็จ' : state.pending ? 'กำลังบันทึก…' : state.reading ? 'กำลังโหลด…' : state.jsonFileName ? 'ไฟล์ JSON: ' + state.jsonFileName : 'บันทึกในเบราว์เซอร์นี้';
+    : state.failed || state.error ? (state.cloud ? state.error : 'บันทึกในเครื่องไม่สำเร็จ กรุณาสำรองข้อมูลและลองอีกครั้ง')
+    : state.jsonSaving ? 'กำลังเขียนไฟล์ JSON…' : state.jsonError ? 'บันทึกแล้ว · JSON ยังไม่สำเร็จ' : state.pending ? 'กำลังบันทึก…' : state.reading ? 'กำลังโหลด…' : state.cloud ? (state.ready ? 'ข้อมูลกลาง · เวอร์ชัน ' + state.version : 'กรุณาเข้าสู่ระบบ') : state.jsonFileName ? 'ไฟล์ JSON: ' + state.jsonFileName : 'บันทึกในเบราว์เซอร์นี้';
   label.style.color = state.failed || state.error || state.jsonError ? '#fbbf24' : '#94a3b8';
   if (refresh) refresh.disabled = !!(state.pending || state.reading || state.jsonSaving);
   if (dot) dot.style.display = draftSaving || state.pending || state.reading || state.jsonSaving ? 'block' : 'none';
@@ -4809,10 +4844,10 @@ async function dsrDoRefresh() {
   var result = await window.dataSdk.refresh();
   if (!result.isOk) {
     _dsrDirty = _dsrDirty || wasDirty;
-    showToast('ยังโหลดข้อมูลไม่ได้ · ข้อมูลในเครื่องไม่หาย', 'error');
+    showToast(result.error || 'ยังโหลดข้อมูลไม่ได้ · ข้อมูลเดิมยังอยู่', 'error');
   } else {
     renderPage();
-    showToast('โหลดข้อมูลจากเครื่องแล้ว');
+    showToast(window.dataSdk.isCloud ? 'โหลดข้อมูลล่าสุดจากฐานกลางแล้ว' : 'โหลดข้อมูลจากเครื่องแล้ว');
   }
   return result;
 }
@@ -4844,12 +4879,13 @@ window.openDSRPrintOverlay = openDSRPrintOverlay;
       var configVersion = window.dataSdk.getDeviceConfigVersion();
       if (window._dsrDeviceConfigVersion !== configVersion) {
         var deviceConfig = window.dataSdk.getDeviceConfig();
-        if (deviceConfig && Object.keys(deviceConfig).length && window.elementSdk) Object.assign(window.elementSdk.config, deviceConfig);
+        if (window.elementSdk && window.dataSdk.isCloud) window.elementSdk.config = Object.assign({}, defaultConfig, deviceConfig);
+        else if (deviceConfig && Object.keys(deviceConfig).length && window.elementSdk) Object.assign(window.elementSdk.config, deviceConfig);
         window._dsrDeviceConfigVersion = configVersion;
       }
       // Restore legacy company settings only if no device settings exist.
       var cfgRecord = data.find(function(r){ return r.record_type === 'config'; });
-      if (cfgRecord && window.elementSdk) {
+      if (cfgRecord && window.elementSdk && !window.dataSdk.isCloud) {
         var hasLocalConfig = false;
         try { hasLocalConfig = !!localStorage.getItem('DSR_config'); } catch(e) {}
         if (!hasLocalConfig) {
@@ -4869,7 +4905,7 @@ window.openDSRPrintOverlay = openDSRPrintOverlay;
       }
     }
   });
-  if (!result.isOk) {
+  if (!result.isOk && !result.loginRequired) {
     console.error('Data SDK init failed');
   }
 
@@ -6444,12 +6480,12 @@ async function dsrSaveAll(appliedForm) {
       var jsonStatus = await window.dataSdk.jsonFileStatus();
       if (jsonStatus.configured) {
         var fileResult = await window.dataSdk.saveJsonFile();
-        if (!fileResult.isOk) showToast('บันทึกในเบราว์เซอร์แล้ว แต่เขียน JSON ไม่สำเร็จ · ' + (fileResult.error || 'กรุณาตรวจสอบไฟล์'), 'error');
+        if (!fileResult.isOk) showToast((window.dataSdk.isCloud ? 'บันทึกฐานกลางแล้ว' : 'บันทึกในเบราว์เซอร์แล้ว') + ' แต่เขียน JSON ไม่สำเร็จ · ' + (fileResult.error || 'กรุณาตรวจสอบไฟล์'), 'error');
         else showToast('บันทึกแล้ว · ' + fileResult.fileName);
         dsrUpdateJsonFileInfo();
-      } else showToast('บันทึกในเบราว์เซอร์แล้ว · เลือกไฟล์ JSON ได้ในหน้าตั้งค่า');
+      } else showToast(window.dataSdk.isCloud ? 'บันทึกเข้าฐานกลางแล้ว · เครื่องอื่นกด Refresh เพื่อดูข้อมูลล่าสุด' : 'บันทึกในเบราว์เซอร์แล้ว · เลือกไฟล์ JSON ได้ในหน้าตั้งค่า');
     } catch(fileError) {
-      showToast('บันทึกในเบราว์เซอร์แล้ว แต่ตรวจหรือเขียน JSON ไม่สำเร็จ · ' + fileError.message, 'error');
+      showToast((window.dataSdk.isCloud ? 'บันทึกฐานกลางแล้ว' : 'บันทึกในเบราว์เซอร์แล้ว') + ' แต่ตรวจหรือเขียน JSON ไม่สำเร็จ · ' + fileError.message, 'error');
     }
   } catch(error) { showToast(error.message || 'บันทึกไม่สำเร็จ · ฉบับร่างยังอยู่', 'error'); }
   finally { button.disabled = false; dsrShowSyncStatus(_dsrLastSyncState || {}); }

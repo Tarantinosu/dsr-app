@@ -1,10 +1,14 @@
 /* DSR+ app shell: keeps the interface available when the network is unavailable. */
-var CACHE_NAME = 'dsr-web-v23-json-file';
+var CACHE_NAME = 'dsr-web-v24-shared-json';
 var APP_SHELL = [
   './',
   './index.html',
   './dsr-local.js',
   './dsr-manual.js',
+  './cloud-config.js',
+  './dsr-cloud.js',
+  './dsr-cloud-ui.js',
+  './assets/supabase-2.118.0.js',
   './manifest.webmanifest',
   './assets/tailwind.css',
   './assets/lucide.min.js',
