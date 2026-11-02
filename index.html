@@ -4056,11 +4056,25 @@ function renderSettings(el) {
   dsrUpdateJsonFileInfo();
 }
 
+// A browser file/database request can remain pending indefinitely (for example
+// while another tab blocks IndexedDB). Optional JSON backup must not lock Save.
+function dsrWaitForJson(promise, timeoutMs) {
+  var timer;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise(function(resolve, reject) {
+      timer = setTimeout(function() {
+        reject(new Error('ระบบไฟล์ JSON ไม่ตอบสนอง · ข้อมูลหลักที่บันทึกแล้วไม่ได้รับผลกระทบ'));
+      }, timeoutMs || 8000);
+    })
+  ]).finally(function() { clearTimeout(timer); });
+}
+
 async function dsrUpdateJsonFileInfo() {
   var el = document.getElementById('dsr-json-file-info');
   if (!el) return;
   try {
-    var state = await window.dataSdk.jsonFileStatus();
+    var state = await dsrWaitForJson(window.dataSdk.jsonFileStatus());
     if (!el.isConnected) return;
     if (!state.supported) el.textContent = 'เบราว์เซอร์นี้ยังเขียนไฟล์ตรงไม่ได้ ใช้ดาวน์โหลด Backup ด้านล่าง หรือเปิดด้วย Chrome / Edge บนคอม';
     else if (!state.configured) el.textContent = 'ยังไม่ได้เลือกไฟล์ · ข้อมูลยังบันทึกในเบราว์เซอร์';
@@ -6477,9 +6491,9 @@ async function dsrSaveAll(appliedForm) {
       Object.values(_qt).forEach(function(st){st.dirty = false;});
     }
     try {
-      var jsonStatus = await window.dataSdk.jsonFileStatus();
+      var jsonStatus = await dsrWaitForJson(window.dataSdk.jsonFileStatus());
       if (jsonStatus.configured) {
-        var fileResult = await window.dataSdk.saveJsonFile();
+        var fileResult = await dsrWaitForJson(window.dataSdk.saveJsonFile(), 15000);
         if (!fileResult.isOk) showToast((window.dataSdk.isCloud ? 'บันทึกฐานกลางแล้ว' : 'บันทึกในเบราว์เซอร์แล้ว') + ' แต่เขียน JSON ไม่สำเร็จ · ' + (fileResult.error || 'กรุณาตรวจสอบไฟล์'), 'error');
         else showToast('บันทึกแล้ว · ' + fileResult.fileName);
         dsrUpdateJsonFileInfo();
