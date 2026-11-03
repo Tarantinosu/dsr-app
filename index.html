@@ -6490,19 +6490,24 @@ async function dsrSaveAll(appliedForm) {
       _dsrManualPending.clear(); _dsrDirty = false;
       Object.values(_qt).forEach(function(st){st.dirty = false;});
     }
-    try {
-      var jsonStatus = await dsrWaitForJson(window.dataSdk.jsonFileStatus());
-      if (jsonStatus.configured) {
-        var fileResult = await dsrWaitForJson(window.dataSdk.saveJsonFile(), 15000);
-        if (!fileResult.isOk) showToast((window.dataSdk.isCloud ? 'บันทึกฐานกลางแล้ว' : 'บันทึกในเบราว์เซอร์แล้ว') + ' แต่เขียน JSON ไม่สำเร็จ · ' + (fileResult.error || 'กรุณาตรวจสอบไฟล์'), 'error');
-        else showToast('บันทึกแล้ว · ' + fileResult.fileName);
-        dsrUpdateJsonFileInfo();
-      } else showToast(window.dataSdk.isCloud ? 'บันทึกเข้าฐานกลางแล้ว · เครื่องอื่นกด Refresh เพื่อดูข้อมูลล่าสุด' : 'บันทึกในเบราว์เซอร์แล้ว · เลือกไฟล์ JSON ได้ในหน้าตั้งค่า');
-    } catch(fileError) {
-      showToast((window.dataSdk.isCloud ? 'บันทึกฐานกลางแล้ว' : 'บันทึกในเบราว์เซอร์แล้ว') + ' แต่ตรวจหรือเขียน JSON ไม่สำเร็จ · ' + fileError.message, 'error');
-    }
+    var savedMessage = window.dataSdk.isCloud ? 'บันทึกฐานกลางแล้ว' : 'บันทึกในเบราว์เซอร์แล้ว';
+    showToast(savedMessage);
+    return dsrBackupAfterSave(savedMessage);
   } catch(error) { showToast(error.message || 'บันทึกไม่สำเร็จ · ฉบับร่างยังอยู่', 'error'); }
   finally { button.disabled = false; dsrShowSyncStatus(_dsrLastSyncState || {}); }
+}
+
+async function dsrBackupAfterSave(savedMessage) {
+  try {
+    var status = await dsrWaitForJson(window.dataSdk.jsonFileStatus());
+    if (!status.configured) return;
+    var result = await dsrWaitForJson(window.dataSdk.saveJsonFile(), 15000);
+    if (result.isOk) showToast('บันทึกแล้ว · ' + result.fileName);
+    else if (!result.busy) showToast(savedMessage + ' · สำรอง JSON ไม่สำเร็จ · ' + (result.error || 'ตรวจสอบไฟล์ในหน้าตั้งค่า'), 'warning');
+    dsrUpdateJsonFileInfo();
+  } catch (error) {
+    showToast(savedMessage + ' · สำรอง JSON ไม่ตอบสนอง · ดาวน์โหลด Backup ได้ในหน้าตั้งค่า', 'warning');
+  }
 }
 
 // Editing actions apply drafts only. Explicit Save buttons commit them; Add/Delete do not.
