@@ -1,5 +1,5 @@
 /* DSR+ app shell: keeps the interface available when the network is unavailable. */
-var CACHE_NAME = 'dsr-web-v26-small-save-buttons';
+var CACHE_NAME = 'dsr-web-v27-independent-json-backup';
 var APP_SHELL = [
   './',
   './index.html',
