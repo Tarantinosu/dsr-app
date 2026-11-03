@@ -66,5 +66,5 @@ test('normal JSON backup still reports its filename',async()=>{
   const f=fixture({status:async()=>({configured:true})});
   await f.ctx.dsrSaveAll(true);
   assert.equal(f.button.disabled,false);
-  assert.equal(f.messages[0],'บันทึกแล้ว · backup.json');
+  assert.equal(f.messages.at(-1),'บันทึกแล้ว · backup.json');
 });
